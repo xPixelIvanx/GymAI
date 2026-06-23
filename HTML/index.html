@@ -1527,7 +1527,12 @@ function seedRoutines(){
   localStorage.setItem(RKEY,JSON.stringify(data));
   return data;
 }
-function loadRoutines(){const r=JSON.parse(localStorage.getItem(aKey(RKEY))||'null');return (r&&r.length)?r:seedRoutines();}
+function loadRoutines(){
+  const signed=typeof cloudState!=='undefined'&&cloudState&&cloudState.user;
+  const r=JSON.parse(localStorage.getItem(aKey(RKEY))||'null');
+  if(r&&r.length)return r;
+  return signed?seedRoutines():[];
+}
 function saveRoutines(){localStorage.setItem(aKey(RKEY),JSON.stringify(routines));cloudPushRoutines();}
 function loadJournal(){return JSON.parse(localStorage.getItem(aKey(JKEY))||'[]');}
 function saveJournal(j){localStorage.setItem(aKey(JKEY),JSON.stringify(j));cloudPushJournal();}
@@ -1545,6 +1550,18 @@ let rmRoutineId=null, rmWorkoutId=null, rmEdit=false;
 
 function renderRM(){
   const root=document.getElementById('rm-root');
+  let cs=null; try{cs=cloudState;}catch(e){}
+  const signed=cs&&cs.user;
+  if(!signed){
+    if(cs&&cs.ready&&cs.available){
+      root.innerHTML=`<div class="crew-hero"><div class="crew-hero-ico">🏋️</div><div class="crew-hero-t">Routine Manager</div><div class="crew-hero-s">Inicia sesión para ver tus rutinas, journal y datos de entrenamiento.</div><button class="rm-btn" style="margin-top:1rem" onclick="profileSignInGoogle()">Iniciar sesión con Google</button></div>`;
+    } else if(cs&&cs.ready&&!cs.available){
+      root.innerHTML=`<div class="crew-hero"><div class="crew-hero-ico">⚠️</div><div class="crew-hero-t">Sin conexión</div><div class="crew-hero-s">Necesitas internet para acceder a tus rutinas.</div></div>`;
+    } else {
+      root.innerHTML=`<div class="crew-hero"><div class="crew-hero-ico">🛰️</div><div class="crew-hero-t">Conectando…</div></div>`;
+    }
+    return;
+  }
   const views={
     routines:viewRoutines, workouts:viewWorkouts, workout:viewWorkout,
     'j-routines':viewJournalRoutines, 'j-workouts':viewJournalWorkouts,
@@ -2889,7 +2906,7 @@ function forestProbs(trees,x){
    "a lot" triggers when any delta is ≥ 3 reps/RIR or ≥ 3 weight-steps away */
 const CKEY='gymAI_corrections_v2';
 function loadCorrections(){
-  let c=JSON.parse(localStorage.getItem(CKEY)||'null');
+  let c=JSON.parse(localStorage.getItem(aKey(CKEY))||'null');
   if(c)return c;
   const old=JSON.parse(localStorage.getItem('gymAI_corrections_v1')||'null');
   if(!old)return {};
@@ -2898,10 +2915,10 @@ function loadCorrections(){
     let lbl=o.label; if(lbl===0)lbl=1;else if(lbl===2)lbl=3;
     migrated[k]={label:lbl,feat:o.feat,confirmed:o.confirmed||false};
   }});
-  localStorage.setItem(CKEY,JSON.stringify(migrated));
+  localStorage.setItem(aKey(CKEY),JSON.stringify(migrated));
   return migrated;
 }
-function saveCorrections(c){localStorage.setItem(CKEY,JSON.stringify(c));}
+function saveCorrections(c){localStorage.setItem(aKey(CKEY),JSON.stringify(c));}
 let rfLastFeat={}, rfLastPred={}, rfLastAgg={};
 function sgn(d){return Math.abs(d)<=0.1?0:(d>0?1:-1);}
 function labelFor(repsDelta,rirDelta,weightDelta){
@@ -3853,46 +3870,21 @@ window.addEventListener('cloud-auth',async e=>{
   cloudState.friendships=[]; cloudState.friendPubs={}; cloudState.crewInvites=[];
   if(cloudState.user){
     const uid=cloudState.user.uid;
-    // 1) rescue: if the profile exists under the old bare key (pre-migration), move it
-    const bareP=localStorage.getItem(PFKEY);
-    if(bareP&&bareP!=='null'&&!loadProfile()){
-      try{localStorage.setItem(aKey(PFKEY),bareP);localStorage.removeItem(PFKEY);}catch(e){}
+    _profileHydrating=true;
+    renderProfile();
+    // always hydrate from Firebase — cloud is the source of truth
+    if(window.Cloud&&window.Cloud.getProfile){
+      try{ const cp=await window.Cloud.getProfile(uid); if(cp)saveProfileData(cp); }catch(_){}
     }
-    // 2) if still no local profile, show loading and try the cloud backup
-    if(!loadProfile()){
-      _profileHydrating=true;
-      renderProfile();
-      if(window.Cloud&&window.Cloud.getProfile){
-        try{ const cp=await window.Cloud.getProfile(uid); if(cp)saveProfileData(cp); }catch(_){}
-      }
+    if(window.Cloud&&window.Cloud.getMusclePRs){
+      try{ const mp=await window.Cloud.getMusclePRs(uid); if(mp&&Object.keys(mp).length)saveMPRs(mp); }catch(_){}
     }
-    if(!Object.keys(loadMPRs()).length){
-      // also rescue bare PRs key
-      const bareM=localStorage.getItem(MPKEY);
-      if(bareM&&bareM!=='{}'){try{localStorage.setItem(aKey(MPKEY),bareM);localStorage.removeItem(MPKEY);}catch(e){}}
-      if(!Object.keys(loadMPRs()).length&&window.Cloud&&window.Cloud.getMusclePRs){
-        try{ const mp=await window.Cloud.getMusclePRs(uid); if(mp)saveMPRs(mp); }catch(_){}
-      }
-    }
-    // hydrate routines from cloud if local is empty/seed-only
-    const localR=JSON.parse(localStorage.getItem(aKey(RKEY))||'null');
-    if(!localR||!localR.length){
-      // rescue bare routines key (pre-migration)
-      const bareR=localStorage.getItem(RKEY);
-      if(bareR&&bareR!=='null'){try{localStorage.setItem(aKey(RKEY),bareR);}catch(e){}}
-      const localR2=JSON.parse(localStorage.getItem(aKey(RKEY))||'null');
-      if(!localR2||!localR2.length){
-        if(window.Cloud&&window.Cloud.getRoutines){
-          try{ const cr=await window.Cloud.getRoutines(uid); if(cr&&cr.length){localStorage.setItem(aKey(RKEY),JSON.stringify(cr));} }catch(_){}
-        }
-      }
+    if(window.Cloud&&window.Cloud.getRoutines){
+      try{ const cr=await window.Cloud.getRoutines(uid); if(cr&&cr.length){localStorage.setItem(aKey(RKEY),JSON.stringify(cr));} }catch(_){}
     }
     routines=loadRoutines();
-    // hydrate journal from cloud if local is empty
-    if(!loadJournal().length){
-      if(window.Cloud&&window.Cloud.getJournal){
-        try{ const cj=await window.Cloud.getJournal(uid); if(cj&&cj.length){localStorage.setItem(aKey(JKEY),JSON.stringify(cj));} }catch(_){}
-      }
+    if(window.Cloud&&window.Cloud.getJournal){
+      try{ const cj=await window.Cloud.getJournal(uid); if(cj&&cj.length){localStorage.setItem(aKey(JKEY),JSON.stringify(cj));} }catch(_){}
     }
     _profileHydrating=false;
     if(loadProfile())cloudSyncMe();
@@ -4446,7 +4438,19 @@ async function profileSignInGoogle(){
   }catch(e){crewErr=cloudErr(e);}
   crewBusy=false;
 }
-async function crewSignOut(){ if(window.Cloud){try{await window.Cloud.signOut();}catch(e){}} profileForceAuth=false; }
+async function crewSignOut(){
+  const uid=cloudState.user?cloudState.user.uid:null;
+  if(window.Cloud){try{await window.Cloud.signOut();}catch(e){}}
+  profileForceAuth=false;
+  if(uid){
+    [RKEY,JKEY,PFKEY,MPKEY,CKEY,FOCUS_KEY].forEach(k=>{
+      try{localStorage.removeItem(k+'::'+uid);}catch(e){}
+    });
+  }
+  routines=[];
+  rmView='routines'; rmRoutineId=null; rmWorkoutId=null;
+  renderRM(); renderProfile(); renderCrew(); renderFooter();
+}
 async function crewCreate(){
   if(crewBusy||!window.Cloud||!cloudState.user)return;
   const name=_v('crew-name-create')||'Mi Crew';
