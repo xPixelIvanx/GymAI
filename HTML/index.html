@@ -1237,6 +1237,9 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
             <select class="rf-select" id="rf-workout" onchange="rfApplied.clear();rfRun()"></select>
           </div>
           <div id="rf-results"><!-- rendered by JS --></div>
+          <details style="margin-top:24px;opacity:.4;font-size:11px"><summary style="cursor:pointer;color:var(--gray)">⚙ Advanced</summary>
+            <button style="margin-top:8px;padding:8px 14px;border-radius:8px;background:var(--card2);border:1px solid var(--border2);color:#FF453A;font-size:12px;cursor:pointer" onclick="if(confirm('¿Borrar TODAS las correcciones del Random Forest? El modelo se reiniciará de cero.')){saveCorrections({});trainRF();rfRun();showToast('Modelo reseteado — 0 correcciones');}">🗑 Reset Random Forest (borrar correcciones)</button>
+          </details>
         </div>
       </div>
 
