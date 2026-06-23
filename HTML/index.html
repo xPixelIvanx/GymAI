@@ -1044,6 +1044,8 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
 .rf-conf{font-size:11px;color:var(--gray);font-family:var(--mono)}
 .rf-feats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .rf-feat{font-family:var(--mono);font-size:10px;color:var(--white60);background:var(--card2);border:1px solid var(--border);border-radius:6px;padding:4px 8px}
+.rf-reason{font-size:11.5px;line-height:1.5;color:var(--white80);background:var(--card2);border:1px solid var(--border);border-left:3px solid var(--blue);border-radius:8px;padding:9px 11px;margin-bottom:12px}
+.rf-reason b{color:var(--white);font-weight:600}
 .rf-bar{height:5px;border-radius:3px;background:var(--border);overflow:hidden;margin-bottom:8px}
 .rf-bar-fill{height:100%;border-radius:3px;transition:width .4s ease}
 .rf-rec-actions{display:flex;gap:8px;flex-wrap:wrap}
@@ -1315,7 +1317,7 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
             <div class="rf-title">Supervised Progression Engine — Random Forest</div>
             <div class="rf-badge" id="rf-badge">training…</div>
           </div>
-          <div class="rf-desc">A <b>Random Forest classifier</b> reads your real <b>reps · weight · RIR</b> from the last 7 days and compares them against your <b>targets</b>. It recommends 5 levels: <b>↓↓ bajar mucho · ↓ bajar · ＝ mantener · ↑ subir · ↑↑ subir mucho</b>, with smart weight steps (kg/lb/db). If it's wrong, correct the direction <b>and</b> the exact amount — the model retrains from your feedback. Only real data — no invented numbers.</div>
+          <div class="rf-desc">A <b>Random Forest classifier</b> that understands the mechanics of lifting, not just averages. It fuses your real <b>reps · RIR · weight</b> into <b>estimated 1RM</b> (load × reps × reps-in-reserve), reads each set as a consequence of the last (fatigue curve, failure, last-set freshness), and compares your <b>demonstrated strength</b> against the prescribed scheme. It recommends 5 levels — <b>↓↓ bajar mucho · ↓ bajar · ＝ mantener · ↑ subir · ↑↑ subir mucho</b> — and anchors the new load to what you <b>actually did</b>: lift over plan with RIR to spare and it carries that surplus forward and adds more. If it's wrong, correct the direction <b>and</b> the exact amount — the model retrains from your feedback. Only real data — no invented numbers.</div>
           <div class="rf-controls">
             <select class="rf-select" id="rf-routine" onchange="rfOnRoutineChange()"></select>
             <select class="rf-select" id="rf-workout" onchange="rfApplied.clear();rfRun()"></select>
@@ -3148,8 +3150,9 @@ function importFromFile(file){
    Supervised classifier on reps · weight · RIR →
    {decrease, maintain, increase} per exercise.
 ══════════════════════════════════════ */
-let rfModel=null, rfTrainAcc=0; const RF_TREES=25, RF_DEPTH=7, RF_MINS=4, RF_MTRY=2;
+let rfModel=null, rfTrainAcc=0; const RF_TREES=40, RF_DEPTH=10, RF_MINS=4, RF_MTRY=3;
 const RF_NCLASS=5; // 0=dec_lot 1=dec 2=maintain 3=inc 4=inc_lot
+const RF_DIM=9;    // feature vector dimension (see rfFeatures)
 function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
 function avg(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0;}
 function argmax(a){let m=0;for(let i=1;i<a.length;i++)if(a[i]>a[m])m=i;return m;}
@@ -3198,20 +3201,53 @@ function forestProbs(trees,x){
   for(const t of trees){const pr=predictTree(t,x);for(let i=0;i<RF_NCLASS;i++)p[i]+=pr[i];}
   return p.map(v=>v/trees.length);
 }
-/* features: [repsDelta, rirDelta, weightDelta] (actual − target)
-   5-class labels:
-     0=decrease a lot · 1=decrease · 2=maintain · 3=increase · 4=increase a lot
-   "a lot" triggers when any delta is ≥ 3 reps/RIR or ≥ 3 weight-steps away */
-const CKEY='gymAI_corrections_v2';
+/* ═══════════════════════════════════════════════════════════════════
+   THE RULES OF THE GAME — how reps · RIR · weight actually interact.
+
+   The model does NOT look at averages in isolation. It understands the
+   physiology of strength via ESTIMATED 1RM with RIR (Epley + reps-in-
+   reserve): the real reps you had available = reps performed + RIR left
+   in the tank. One single number fuses load, reps and effort:
+
+       e1RM = weight × (1 + (reps + RIR) / 30)
+
+   • More weight  → higher e1RM   (you moved more load)
+   • More reps    → higher e1RM   (you moved it more times)
+   • More RIR     → higher e1RM   (it was EASIER, you're stronger than the
+                                   raw reps suggest — you stopped early)
+
+   So the master signal is  e1RM_demostrado / e1RM_objetivo:
+     ratio > 1  → you proved you're STRONGER than prescribed → go up
+     ratio < 1  → you under-performed → back off
+     ratio ≈ 1  → on target → hold
+
+   And the recommendation is anchored to what you ACTUALLY did, never to
+   the bare target: if you hit RIR 4-3-2 (target 2-1-0) with +10 kg over
+   plan, that extra 10 kg is already baked into e1RM_demostrado, and the
+   engine prescribes the load that hits the TARGET rep/RIR scheme at your
+   NEW demonstrated strength — i.e. it keeps the +10 and adds more on top.
+
+   It also reads each set as a CONSEQUENCE of the previous one: the RIR /
+   reps slope across the session (fatigue), the last-set endpoint, and
+   whether any set collapsed to failure below target (over-reaching).
+   ═══════════════════════════════════════════════════════════════════ */
+
+const CKEY='gymAI_corrections_v3';
 function loadCorrections(){
   let c=JSON.parse(localStorage.getItem(aKey(CKEY))||'null');
   if(c)return c;
-  const old=JSON.parse(localStorage.getItem('gymAI_corrections_v1')||'null');
-  if(!old)return {};
+  // migrate v2 → v3: keep the user's exercise-level intent (label/delta/
+  // confirmed) but drop the old 3-feature vector — it can't be re-expanded
+  // to the new 9-D space, so trainRF simply won't reinforce from it until
+  // the user re-confirms. Their per-exercise override still applies live.
+  let prev=null; try{prev=JSON.parse(localStorage.getItem(aKey('gymAI_corrections_v2'))||'null');}catch(e){}
+  if(!prev){const o=JSON.parse(localStorage.getItem('gymAI_corrections_v1')||'null');
+    if(o){prev={};Object.keys(o).forEach(k=>{const x=o[k];if(x){let l=x.label;if(l===0)l=1;else if(l===2)l=3;prev[k]={label:l,confirmed:x.confirmed||false};}});}}
+  if(!prev)return {};
   const migrated={};
-  Object.keys(old).forEach(k=>{const o=old[k];if(o&&o.feat){
-    let lbl=o.label; if(lbl===0)lbl=1;else if(lbl===2)lbl=3;
-    migrated[k]={label:lbl,feat:o.feat,confirmed:o.confirmed||false};
+  Object.keys(prev).forEach(k=>{const o=prev[k];if(o&&typeof o.label==='number'){
+    migrated[k]={label:o.label,confirmed:o.confirmed||false};
+    if(typeof o.delta==='number')migrated[k].delta=o.delta;
   }});
   localStorage.setItem(aKey(CKEY),JSON.stringify(migrated));
   return migrated;
@@ -3220,39 +3256,137 @@ function saveCorrections(c){localStorage.setItem(aKey(CKEY),JSON.stringify(c));}
 let rfLastFeat={}, rfLastPred={}, rfLastAgg={};
 const rfApplied=new Set();
 function sgn(d){return Math.abs(d)<=0.1?0:(d>0?1:-1);}
-function labelFor(repsDelta,rirDelta,weightDelta){
-  const up=(sgn(repsDelta)>0)+(sgn(rirDelta)>0)+(sgn(weightDelta)>0);
-  const down=(sgn(repsDelta)<0)+(sgn(rirDelta)<0)+(sgn(weightDelta)<0);
-  if(up===0&&down===0)return 2; // maintain
-  const magW=Math.abs(weightDelta), magR=Math.abs(repsDelta), magRir=Math.abs(rirDelta);
-  const intense=magW>=10||magR>=3||magRir>=3;
-  if(up>down)return intense?4:3;   // inc lot / inc
-  if(down>up)return intense?0:1;   // dec lot / dec
-  return 2; // tie
+
+/* e1RM that accounts for reps left in reserve (RIR). Capped so very high
+   rep+RIR counts don't explode the Epley estimate. */
+function e1rmRIR(weight,reps,rir){
+  const eff=Math.min(30,Math.max(0,(+reps||0)+(+rir||0)));
+  return (+weight||0)*(1+eff/30);
 }
+/* least-squares slope of a series across set index 0..n-1 */
+function rfSlope(arr){
+  const n=arr.length; if(n<2)return 0;
+  let sx=0,sy=0,sxy=0,sxx=0;
+  for(let i=0;i<n;i++){sx+=i;sy+=arr[i];sxy+=i*arr[i];sxx+=i*i;}
+  const d=n*sxx-sx*sx; return d?round1((n*sxy-sx*sy)/d):0;
+}
+/* Build the full picture from logged sets.
+   allRecs  = every set in the window (stable strength estimate)
+   lastRecs = sets of the MOST RECENT session (fresh fatigue curve)
+   each rec = {actual:{reps,rir,weight}, target:{reps,rir,weight}} */
+function aggFromRecs(allRecs,lastRecs,meta){
+  const n=allRecs.length; if(!n)return {sessions:0};
+  const L=(lastRecs&&lastRecs.length)?lastRecs:allRecs;
+  const num=x=>+x||0;
+  const tgtReps=avg(allRecs.map(s=>num(s.target.reps))),  repsActual=avg(allRecs.map(s=>num(s.actual.reps)));
+  const tgtRir=avg(allRecs.map(s=>num(s.target.rir))),    rirActual=avg(allRecs.map(s=>num(s.actual.rir)));
+  const tgtWeight=avg(allRecs.map(s=>num(s.target.weight))),wActual=avg(allRecs.map(s=>num(s.actual.weight)));
+  const tgtE1rm=avg(allRecs.map(s=>e1rmRIR(s.target.weight,s.target.reps,s.target.rir)));
+  const actE1rm=avg(allRecs.map(s=>e1rmRIR(s.actual.weight,s.actual.reps,s.actual.rir)));
+  // safety / quality across the whole window
+  let fail=0,hit=0;
+  allRecs.forEach(s=>{const ar=num(s.actual.rir),rp=num(s.actual.reps),tr=num(s.target.reps);
+    if(ar<=0&&rp<tr)fail++;      // went to failure AND missed the target reps → over-reach
+    if(rp>=tr)hit++;});          // met or beat the prescribed reps
+  // fatigue curve from the most recent session only
+  const lArir=L.map(s=>num(s.actual.rir)), lAreps=L.map(s=>num(s.actual.reps));
+  const li=L.length-1;
+  const rirLast=lArir[li], repsLastDelta=lAreps[li]-num(L[li].target.reps);
+  const e1rmRatio=tgtE1rm>0?actE1rm/tgtE1rm:1;
+  // prescription anchored to demonstrated strength at the target scheme
+  const denom=1+Math.min(30,Math.max(0,tgtReps+tgtRir))/30;
+  const recWeight=denom>0?actE1rm/denom:tgtWeight;
+  return {
+    sessions:meta?meta.sessions:1, lastDate:meta?meta.lastDate:null, unit:meta?meta.unit:'kg',
+    tgtReps,repsActual,repsDelta:repsActual-tgtReps,
+    tgtRir,rirActual,rirDelta:rirActual-tgtRir,
+    tgtWeight,wActual,weightDelta:wActual-tgtWeight,
+    tgtE1rm,actE1rm,e1rmRatio,
+    rirLast,repsLastDelta,
+    rirSlope:rfSlope(lArir),repsSlope:rfSlope(lAreps),
+    failRate:fail/n,hitRate:hit/n,
+    recWeight
+  };
+}
+/* The 9-D feature view the forest splits on. Same function for training
+   and inference, so the model never sees a distribution shift. */
+function rfFeatures(a){
+  return [
+    round1((a.e1rmRatio-1)*10),                          // 0 demonstrated-strength gap (×10)
+    round1(a.repsDelta),                                  // 1 mean reps vs target
+    round1(a.rirDelta),                                   // 2 mean RIR vs target (higher = easier)
+    round1((a.tgtWeight>0?a.weightDelta/a.tgtWeight:0)*10),// 3 relative load gap (×10)
+    round1(a.rirLast-a.tgtRir),                           // 4 last-set freshness vs target
+    round1(a.rirSlope),                                   // 5 RIR fatigue trend within session
+    round1(a.repsSlope),                                  // 6 reps fatigue trend within session
+    round1(a.failRate*5),                                 // 7 over-reach (failure below target)
+    round1(a.hitRate*3)                                   // 8 how often target reps were met
+  ];
+}
+/* GROUND TRUTH — the embedded rules. Maps a full session picture to the
+   correct 5-class call. The forest learns to approximate this from the
+   feature view, then your corrections bend it where you disagree. */
+function rfGroundTruth(a){
+  // 1) Over-reaching dominates everything: real failure below target reps
+  if(a.failRate>=0.5)return 0;                            // bajar mucho
+  if(a.failRate>=0.25)return 1;                           // bajar
+  const r=a.e1rmRatio;
+  // 2) Clearly too easy → push hard
+  if(r>=1.09||(a.rirDelta>=3&&a.repsDelta>=-0.5))return 4; // subir mucho
+  if(r<=0.90)return 0;                                    // bajar mucho
+  // 3) Moderate strength gap
+  if(r>=1.03||(a.rirLast-a.tgtRir>=2&&a.hitRate>=0.8))return 3; // subir
+  if(r<=0.965)return 1;                                   // bajar
+  return 2;                                               // mantener
+}
+/* Simulate one plausible logged session (2–4 sets) with a fatigue curve
+   and occasional failure, spanning the whole feature space. The label is
+   assigned by rfGroundTruth, never by the generator — the forest learns
+   the rule, not the sampler. */
+function simSession(){
+  const nSets=2+Math.floor(Math.random()*3);
+  const tReps=4+Math.floor(Math.random()*10);            // 4–13
+  const tRir=Math.floor(Math.random()*4);                // 0–3
+  const tW=40+Math.random()*120;                          // 40–160
+  const ease=Math.random()*3.5-1.5;                       // how easy it felt (-1.5..+2)
+  const fatigue=Math.random()*0.9;                        // per-set decay
+  const wMul=0.85+Math.random()*0.32;                     // load actually chosen vs target
+  const noise=()=>Math.random()*1.6-0.8;
+  const w=snapMul(tW*wMul,2.5);
+  const recs=[];
+  for(let i=0;i<nSets;i++){
+    let reps=Math.round(tReps+ease*1.4-fatigue*i*1.3+noise());
+    let rir=Math.round(tRir+ease-fatigue*i+noise()*0.6);
+    if(Math.random()<0.07){rir=0;reps=Math.max(0,tReps-1-Math.floor(Math.random()*3));} // failure
+    reps=Math.max(0,Math.min(tReps+9,reps));
+    rir=Math.max(0,Math.min(6,rir));
+    recs.push({actual:{reps,rir,weight:w},target:{reps:tReps,rir:tRir,weight:snapMul(tW,2.5)}});
+  }
+  return aggFromRecs(recs,recs,{sessions:1});
+}
+/* Class-balanced sampling: the physiology of a random session skews toward
+   under-performance, which would bias the forest. We draw until every class
+   is roughly evenly represented so each decision boundary is learned well. */
 function genTrainingData(N){
   const X=[],y=[];
-  const pick=a=>a[Math.floor(Math.random()*a.length)];
-  for(let i=0;i<N;i++){
-    let rd,rir,wd;
-    const r=Math.random();
-    if(r<0.25){ // exact zeros (maintain)
-      rd=pick([0,0,0,0]); rir=pick([0,0,0,0]); wd=pick([0,0,0,0]);
-    } else if(r<0.5){ // small deltas
-      rd=pick([-2,-1,0,0,1,2]); rir=pick([-2,-1,0,0,1,2]); wd=pick([-7.5,-5,-2.5,0,0,2.5,5,7.5]);
-    } else if(r<0.75){ // continuous moderate
-      rd=round1(Math.random()*6-3); rir=round1(Math.random()*6-3); wd=round1(Math.random()*20-10);
-    } else { // extreme cases (for "a lot" classes)
-      rd=round1(Math.random()*10-5); rir=round1(Math.random()*8-4); wd=round1(Math.random()*60-30);
-    }
-    X.push([rd,rir,wd]); y.push(labelFor(rd,rir,wd));
+  const cap=Math.ceil(N/RF_NCLASS), count=[0,0,0,0,0];
+  let attempts=0, done=0;
+  while(done<N&&attempts<N*40){
+    attempts++;
+    const a=simSession(), lbl=rfGroundTruth(a);
+    if(count[lbl]>=cap)continue;          // this class is full — resample
+    X.push(rfFeatures(a)); y.push(lbl); count[lbl]++; done++;
   }
+  // top up if some class is genuinely rare (relax the cap)
+  while(done<N&&attempts<N*60){attempts++;const a=simSession();X.push(rfFeatures(a));y.push(rfGroundTruth(a));done++;}
   return {X,y};
 }
 function trainRF(){
-  const {X,y}=genTrainingData(800);
+  const {X,y}=genTrainingData(1400);
   const corr=loadCorrections();
-  Object.keys(corr).forEach(k=>{const c=corr[k];if(c&&c.feat){for(let j=0;j<15;j++){X.push(c.feat.slice());y.push(c.label);}}});
+  // reinforce only corrections carrying a current-dimension feature vector
+  Object.keys(corr).forEach(k=>{const c=corr[k];
+    if(c&&Array.isArray(c.feat)&&c.feat.length===RF_DIM){for(let j=0;j<22;j++){X.push(c.feat.slice());y.push(c.label);}}});
   rfModel=trainForest(X,y);
   let correct=0;for(let i=0;i<X.length;i++)if(argmax(forestProbs(rfModel,X[i]))===y[i])correct++;
   rfTrainAcc=Math.round(correct/X.length*1000)/10;
@@ -3283,40 +3417,42 @@ function rfStepForUnit(u){return u==='kg'?2.5:(u==='kg_db'?2:5);}
 function round1(w){return Math.round(w*10)/10;}
 function snapMul(w,step){return round1(Math.round((+w||0)/step)*step);}
 
-/* Smart delta: given the 5-class prediction and the actual performance gap,
-   calculate how many steps to adjust. Anchors to TARGET weight always. */
+/* Smart delta — anchored to DEMONSTRATED strength, not the bare target.
+   The physiological recommendation is `agg.recWeight`: the load that hits
+   the TARGET rep/RIR scheme at the e1RM you just proved. So if you lifted
+   +10 kg over plan with RIR to spare, recWeight already sits above that
+   +10 and the delta carries the extra forward and adds more on top.
+   The predicted class only shapes/bounds it (and lets a manual correction
+   force a direction the raw e1RM wouldn't suggest). */
 function rfCalcDelta(cls,agg,step){
   if(cls===2)return 0; // maintain
   const sign=(cls>=3)?1:-1;
   const isLot=(cls===0||cls===4);
-  const absWGap=Math.abs(agg.weightDelta);
-  const gapSteps=absWGap/step;
-  if(isLot){
-    if(gapSteps>=4) return sign*snapMul(absWGap*0.85,step);
-    return sign*step*Math.max(3,Math.round(gapSteps));
-  } else {
-    if(gapSteps>=3) return sign*step*clamp(Math.round(gapSteps*0.5),1,3);
-    return sign*step;
-  }
+  const curW=snapMul(agg.tgtWeight,step);
+  let base=(agg.recWeight||curW)-curW;          // e1RM-anchored move
+  // when the class agrees with the physiological move, ride it; otherwise
+  // (e.g. the user forced this direction) fall back to a sensible step
+  let mag=(Math.sign(base)===sign)?Math.abs(base):(isLot?3*step:step);
+  if(isLot)mag=Math.max(mag,3*step);             // "a lot" must be substantial
+  else mag=clamp(mag,step,4*step);               // normal moves stay measured
+  return sign*snapMul(mag,step);
 }
 
-/* Real data only — NEVER invents data. Returns {sessions:0} when nothing is logged. */
+/* Real data only — NEVER invents data. Returns {sessions:0} when nothing
+   is logged. Feeds the same aggFromRecs the trainer uses, so the live
+   feature view is identical to what the model was trained on. */
 function rfAggregate(routineName,workoutName,ex){
   const cutoff=Date.now()-7*864e5;
-  const sess=loadJournal().filter(e=>e.routineName===routineName&&e.workoutName===workoutName&&new Date(e.dateISO).getTime()>=cutoff);
-  const recs=[];
-  sess.forEach(e=>{const g=e.exercises.find(x=>x.name===ex.name);if(g)g.sets.forEach(s=>recs.push(s));});
-  if(!recs.length)return {sessions:0};
-  const repsActual=avg(recs.map(s=>+s.actual.reps)), tgtReps=avg(recs.map(s=>+s.target.reps));
-  const rirActual=avg(recs.map(s=>+s.actual.rir)),  tgtRir=avg(recs.map(s=>+s.target.rir));
-  const wActual=avg(recs.map(s=>+s.actual.weight)), tgtWeight=avg(recs.map(s=>+s.target.weight));
-  let lastDate=null;
-  for(const e of sess){const g=e.exercises.find(x=>x.name===ex.name);if(g){lastDate=e.dateISO;break;}}
-  return {sessions:sess.length,
-    tgtReps,repsActual,repsDelta:repsActual-tgtReps,
-    tgtRir,rirActual,rirDelta:rirActual-tgtRir,
-    tgtWeight,wActual,weightDelta:wActual-tgtWeight,
-    lastDate,unit:ex.unit};
+  const sess=loadJournal()
+    .filter(e=>e.routineName===routineName&&e.workoutName===workoutName&&new Date(e.dateISO).getTime()>=cutoff)
+    .sort((a,b)=>new Date(b.dateISO)-new Date(a.dateISO)); // newest first
+  const allRecs=[]; let lastRecs=null, lastDate=null, sessCount=0;
+  sess.forEach(e=>{const g=e.exercises.find(x=>x.name===ex.name);if(!g||!g.sets.length)return;
+    sessCount++;
+    g.sets.forEach(s=>allRecs.push(s));
+    if(!lastRecs){lastRecs=g.sets;lastDate=e.dateISO;}}); // first hit = most recent
+  if(!allRecs.length)return {sessions:0};
+  return aggFromRecs(allRecs,lastRecs,{sessions:sessCount,lastDate,unit:ex.unit});
 }
 
 function rfSelected(){
@@ -3337,7 +3473,7 @@ function rfRun(){
     const agg=rfAggregate(r.name,w.name,ex);
     if(!agg.sessions){html+=rfNoDataCard(ex);return;}
     dataCount++;
-    const feat=[agg.repsDelta,agg.rirDelta,agg.weightDelta];
+    const feat=rfFeatures(agg);
     const probs=forestProbs(rfModel,feat);
     const cls=argmax(probs), conf=Math.round(probs[cls]*100);
     const key=r.name+'::'+w.name+'::'+ex.name;
@@ -3366,6 +3502,25 @@ const RF_MAP={
   3:{t:'SUBIR',c:'up',a:'▲'},
   4:{t:'SUBIR MUCHO',c:'up-lot',a:'⊼'}
 };
+/* Plain-language read of what the engine saw — so it's obvious the model
+   understands the mechanics, not just spitting a label. */
+function rfReason(agg,eff,ul){
+  const pct=Math.round((agg.e1rmRatio-1)*100);
+  const bits=[];
+  bits.push(`Fuerza demostrada <b>e1RM ${agg.actE1rm.toFixed(0)}</b> vs objetivo <b>${agg.tgtE1rm.toFixed(0)} ${ul}</b> (${pct>=0?'+':''}${pct}%)`);
+  const rd=round1(agg.rirDelta);
+  if(rd>=0.5)bits.push(`dejaste <b>+${rd} RIR</b> de margen (más fácil de lo prescrito)`);
+  else if(rd<=-0.5)bits.push(`llegaste <b>${rd} RIR</b> bajo objetivo (más duro)`);
+  if(agg.failRate>0)bits.push(`fallaste por debajo del objetivo en el <b>${Math.round(agg.failRate*100)}%</b> de las series`);
+  else if(agg.rirSlope<=-0.8)bits.push(`el RIR cae serie a serie (fatiga marcada)`);
+  else if(Math.abs(agg.rirSlope)<0.4&&agg.sessions>=1)bits.push(`aguantaste el esfuerzo entre series`);
+  const verdict={4:'te quedaste muy corto de intensidad → sube fuerte la carga',
+    3:'vas por encima de lo prescrito → toca subir',
+    2:'estás justo en el objetivo → mantén y consolida',
+    1:'te quedaste por debajo → baja un punto',
+    0:'sobreesfuerzo / muy por debajo → baja para recuperar técnica'}[eff];
+  return `<div class="rf-reason">🧠 ${bits.join(' · ')}. <b>${verdict}.</b></div>`;
+}
 function rfRecCard(ex,agg,cls,eff,conf,corr,key,delta){
   const corrected=!!corr;
   const ul=unitLabel(ex.unit);
@@ -3399,11 +3554,13 @@ function rfRecCard(ex,agg,cls,eff,conf,corr,key,delta){
       <span class="rf-wto" id="rf-wto-${ex.id}">${newW} ${ul}</span>
       ${delta!==0?`<span class="rf-conf" id="rf-wd-${ex.id}">(${delta>0?'+':''}${delta} ${ul})</span>`:`<span class="rf-conf" id="rf-wd-${ex.id}">(mantener carga)</span>`}
     </div>
-    <div class="rf-conf" style="margin-bottom:10px">Anclado al target de la rutina${agg.lastDate?` · último log: ${fmtDate(agg.lastDate)}`:''}${corrNote}</div>
+    <div class="rf-conf" style="margin-bottom:10px">Anclado a tu fuerza demostrada (e1RM)${agg.lastDate?` · último log: ${fmtDate(agg.lastDate)}`:''}${corrNote}</div>
+    ${rfReason(agg,eff,ul)}
     <div class="rf-feats">
       ${tag('reps',agg.repsActual,agg.tgtReps,agg.repsDelta)}
       ${tag('RIR',agg.rirActual,agg.tgtRir,agg.rirDelta)}
       ${tag('wt',agg.wActual,agg.tgtWeight,agg.weightDelta)}
+      <span class="rf-feat" style="color:var(--blue);border-color:rgba(10,132,255,.35)">e1RM ${agg.actE1rm.toFixed(0)}/${agg.tgtE1rm.toFixed(0)}</span>
       <span class="rf-feat">${agg.sessions} sess</span>
     </div>
     <div class="rf-bar"><div class="rf-bar-fill" style="width:${conf}%;background:${barColor}"></div></div>
@@ -3452,7 +3609,7 @@ function rfApplyAll(){
     if(rfApplied.has(ex.id))return;
     const agg=rfAggregate(r.name,w.name,ex);
     if(!agg.sessions)return;
-    const feat=[agg.repsDelta,agg.rirDelta,agg.weightDelta];
+    const feat=rfFeatures(agg);
     const cls=argmax(forestProbs(rfModel,feat));
     const key=r.name+'::'+w.name+'::'+ex.name;
     const c=corr[key]; const eff=c?c.label:cls;
