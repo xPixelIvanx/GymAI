@@ -1037,6 +1037,7 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
 .rec-pill.same{background:rgba(142,142,147,.12);border:1px solid rgba(142,142,147,.3);color:var(--gray)}
 .rec-pill.down{background:rgba(255,159,10,.12);border:1px solid rgba(255,159,10,.35);color:var(--orange)}
 .rec-pill.down-lot{background:rgba(255,59,48,.15);border:1px solid rgba(255,59,48,.4);color:#FF6961;text-shadow:0 0 8px rgba(255,59,48,.2)}
+.rec-pill.locked{background:rgba(10,132,255,.12);border:1px solid rgba(10,132,255,.35);color:var(--blue)}
 .rf-weights{display:flex;align-items:center;gap:12px;font-family:var(--mono);margin-bottom:12px;flex-wrap:wrap}
 .rf-wfrom{font-size:14px;color:var(--white60)}
 .rf-warrow{color:var(--blue);font-size:16px}
@@ -1066,11 +1067,17 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
 .rf-amt-label{font-size:11px;color:var(--gray);width:100%;margin-bottom:4px}
 .rf-slider{flex:1;min-width:120px;accent-color:var(--blue);cursor:pointer;height:6px}
 .rf-slider-val{font-size:13px;font-weight:700;font-family:var(--mono);color:var(--blue);min-width:80px;text-align:right}
-.rf-applied{opacity:.65;border-color:var(--green)!important}
-.rf-applied-badge{font-size:11px;color:var(--green);font-weight:700;margin-left:auto}
 .rf-empty{text-align:center;color:var(--gray);padding:24px 12px;font-size:13px;background:var(--card);border:1px dashed var(--border2);border-radius:12px;line-height:1.5}
 .rf-applyall{width:100%;padding:13px;border-radius:12px;background:linear-gradient(135deg,#34C759,#30B14E);border:none;color:#fff;font-weight:700;font-size:13px;cursor:pointer;margin-top:6px}
 .rf-applyall:hover{transform:translateY(-1px)}
+.rf-applyall-locked{background:var(--card2);border:1px solid var(--border);color:var(--white80);cursor:default;line-height:1.5}
+.rf-applyall-locked:hover{transform:none}
+.rf-applyall-locked span{color:var(--gray);font-weight:500;font-size:11.5px}
+.rf-rec.rf-locked{opacity:.85;border-style:dashed}
+.rf-locked-msg{font-size:12px;line-height:1.55;color:var(--white80);margin:4px 0 12px}
+.rf-locked-msg b{color:var(--white);font-weight:600}
+.rf-unlock{width:100%;padding:10px;border-radius:10px;background:transparent;border:1px solid var(--border2);color:var(--white60);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s}
+.rf-unlock:hover{background:var(--white5);color:var(--white80)}
 .toggle-mini{width:40px;height:24px;border-radius:12px;background:var(--border2);position:relative;cursor:pointer;border:none;flex-shrink:0;transition:background .25s}
 .toggle-mini.on{background:var(--blue)}
 .toggle-mini::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .25s}
@@ -1320,7 +1327,7 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
           <div class="rf-desc">A <b>Random Forest classifier</b> that understands the mechanics of lifting, not just averages. It fuses your real <b>reps · RIR · weight</b> into <b>estimated 1RM</b> (load × reps × reps-in-reserve), reads each set as a consequence of the last (fatigue curve, failure, last-set freshness), and compares your <b>demonstrated strength</b> against the prescribed scheme. It recommends 5 levels — <b>↓↓ bajar mucho · ↓ bajar · ＝ mantener · ↑ subir · ↑↑ subir mucho</b> — and anchors the new load to what you <b>actually did</b>: lift over plan with RIR to spare and it carries that surplus forward and adds more. If it's wrong, correct the direction <b>and</b> the exact amount — the model retrains from your feedback. Only real data — no invented numbers.</div>
           <div class="rf-controls">
             <select class="rf-select" id="rf-routine" onchange="rfOnRoutineChange()"></select>
-            <select class="rf-select" id="rf-workout" onchange="rfApplied.clear();rfRun()"></select>
+            <select class="rf-select" id="rf-workout" onchange="rfRun()"></select>
           </div>
           <div id="rf-results"><!-- rendered by JS --></div>
           <details style="margin-top:24px;opacity:.4;font-size:11px"><summary style="cursor:pointer;color:var(--gray)">⚙ Advanced</summary>
@@ -3254,7 +3261,20 @@ function loadCorrections(){
 }
 function saveCorrections(c){localStorage.setItem(aKey(CKEY),JSON.stringify(c));}
 let rfLastFeat={}, rfLastPred={}, rfLastAgg={};
-const rfApplied=new Set();
+/* Once you APPLY the engine's weight changes, that exercise is "consumed"
+   for the logs it was based on — re-running the model on the same sessions
+   would just double-count the jump you already banked. So we LOCK each
+   exercise to the date of the log that drove the recommendation. It stays
+   locked (no more help) until you record a NEW session of that workout — a
+   newer log appears and it auto-unlocks. Persisted per account. */
+const RFLKEY='gymAI_rflocks_v1';
+function loadRFLocks(){try{return JSON.parse(localStorage.getItem(aKey(RFLKEY))||'{}')||{};}catch(e){return {};}}
+function saveRFLocks(o){localStorage.setItem(aKey(RFLKEY),JSON.stringify(o));}
+function rfLockExercise(key,lastDate){const l=loadRFLocks();l[key]=lastDate||new Date().toISOString();saveRFLocks(l);}
+function rfUnlockExercise(key){const l=loadRFLocks();delete l[key];saveRFLocks(l);}
+function rfIsLocked(key,agg){const at=loadRFLocks()[key];if(!at)return false;
+  // locked while no session newer than the one we applied from exists
+  return !agg.lastDate||new Date(agg.lastDate).getTime()<=new Date(at).getTime();}
 function sgn(d){return Math.abs(d)<=0.1?0:(d>0?1:-1);}
 
 /* e1RM that accounts for reps left in reserve (RIR). Capped so very high
@@ -3410,7 +3430,7 @@ function rfPopulateWorkouts(prevW){
   ws.innerHTML=((r&&r.workouts)||[]).map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('');
   if(prevW&&[...ws.options].some(o=>o.value===prevW))ws.value=prevW;
 }
-function rfOnRoutineChange(){rfApplied.clear();rfPopulateWorkouts();rfRun();}
+function rfOnRoutineChange(){rfPopulateWorkouts();rfRun();}
 /* minimum progression increment per unit — results must be multiples of this:
    kg → 2.5 (2.5,5,7.5,10…) · kg/db → 2 (2,4,6,8…) · lb & lb/db → 5 (5,10,15,20…) */
 function rfStepForUnit(u){return u==='kg'?2.5:(u==='kg_db'?2:5);}
@@ -3468,15 +3488,17 @@ function rfRun(){
   if(!w.exercises.length){results.innerHTML=`<div class="rf-empty">"${esc(w.name)}" has no exercises yet.</div>`;return;}
   rfLastFeat={};rfLastPred={};rfLastAgg={};
   const corr=loadCorrections();
-  let html='', dataCount=0, pendingCount=0;
+  let html='', dataCount=0, pendingCount=0, lockedCount=0;
   w.exercises.forEach((ex)=>{
     const agg=rfAggregate(r.name,w.name,ex);
     if(!agg.sessions){html+=rfNoDataCard(ex);return;}
     dataCount++;
+    const key=r.name+'::'+w.name+'::'+ex.name;
+    // already applied for this log → no more help until a new session is logged
+    if(rfIsLocked(key,agg)){html+=rfLockedCard(ex,agg,key);lockedCount++;return;}
     const feat=rfFeatures(agg);
     const probs=forestProbs(rfModel,feat);
     const cls=argmax(probs), conf=Math.round(probs[cls]*100);
-    const key=r.name+'::'+w.name+'::'+ex.name;
     rfLastFeat[key]=feat; rfLastPred[key]=cls; rfLastAgg[key]=agg;
     const c=corr[key];
     const eff=c?c.label:cls;
@@ -3484,16 +3506,19 @@ function rfRun(){
     const corrDelta=(c&&typeof c.delta==='number')?c.delta:null;
     const smartDelta=corrDelta!==null?corrDelta:rfCalcDelta(eff,agg,step);
     html+=rfRecCard(ex,agg,cls,eff,conf,c,key,smartDelta);
-    if(!rfApplied.has(ex.id))pendingCount++;
+    pendingCount++;
   });
   if(!dataCount){
     results.innerHTML=`<div class="rf-empty">📭 Nothing logged for <b>${esc(w.name)}</b> in the last 7 days.<br>The engine only analyzes your real War Journal — it never invents data. Finish a session in the Routine Manager to get recommendations.</div>`;
     return;
   }
-  const allDone=pendingCount===0;
-  results.innerHTML=html+(allDone
-    ?`<div class="rf-applyall" style="opacity:.5;cursor:default">✓ Todas las recomendaciones aplicadas a "${esc(w.name)}"</div>`
-    :`<button class="rf-applyall" onclick="rfApplyAll()">⤴ Aplicar ${pendingCount} recomendación${pendingCount!==1?'es':''} a "${esc(w.name)}"</button>`);
+  let footer='';
+  if(pendingCount>0){
+    footer=`<button class="rf-applyall" onclick="rfApplyAll()">⤴ Aplicar ${pendingCount} recomendación${pendingCount!==1?'es':''} a "${esc(w.name)}"</button>`;
+  } else if(lockedCount>0){
+    footer=`<div class="rf-applyall rf-applyall-locked">🔒 Ya aplicaste las recomendaciones de esta sesión a "${esc(w.name)}".<br><span>Registra un nuevo entrenamiento para recibir nueva ayuda del Random Forest.</span></div>`;
+  }
+  results.innerHTML=html+footer;
 }
 const RF_MAP={
   0:{t:'BAJAR MUCHO',c:'down-lot',a:'⊻'},
@@ -3521,6 +3546,22 @@ function rfReason(agg,eff,ul){
     0:'sobreesfuerzo / muy por debajo → baja para recuperar técnica'}[eff];
   return `<div class="rf-reason">🧠 ${bits.join(' · ')}. <b>${verdict}.</b></div>`;
 }
+/* Shown after you've applied — the engine steps back so it can't double-count
+   the jump you already banked. Unlocks on its own when a newer session lands. */
+function rfLockedCard(ex,agg,key){
+  const ul=unitLabel(ex.unit), step=rfStepForUnit(ex.unit);
+  const nowW=ex.sets&&ex.sets.length?snapMul(avg(ex.sets.map(s=>+s.weight||0)),step):0;
+  const b=b64(key);
+  return `<div class="rf-rec rf-locked">
+    <div class="rf-rec-head">
+      <span class="rf-rec-name">${esc(ex.name)}</span>
+      <span class="rec-pill locked">🔒 APLICADO</span>
+    </div>
+    <div class="rf-locked-msg">Ya aplicaste el ajuste de carga (<b>${nowW} ${ul}</b>) para esta sesión. El Random Forest no vuelve a recomendar sobre los mismos datos${agg.lastDate?` (último log: ${fmtDate(agg.lastDate)})`:''} — <b>registra un nuevo entrenamiento de este ejercicio</b> y la ayuda se reactiva sola.</div>
+    <button class="rf-unlock" onclick="rfReactivate('${b}')">↺ Reactivar ayuda ahora</button>
+  </div>`;
+}
+function rfReactivate(b){rfUnlockExercise(unb64(b));rfRun();showToast('Random Forest reactivado para este ejercicio.');}
 function rfRecCard(ex,agg,cls,eff,conf,corr,key,delta){
   const corrected=!!corr;
   const ul=unitLabel(ex.unit);
@@ -3530,7 +3571,6 @@ function rfRecCard(ex,agg,cls,eff,conf,corr,key,delta){
   const newW=Math.max(0,snapMul(curW+delta,step));
   const barColor=(eff>=3)?'#34C759':(eff<=1)?'#FF9F0A':'#8E8E93';
   const b=b64(key);
-  const applied=rfApplied.has(ex.id);
   const tag=(label,actual,tgt,d)=>{const s=sgn(d);const col=s>0?'color:var(--green);border-color:rgba(52,199,89,.35)':s<0?'color:var(--orange);border-color:rgba(255,159,10,.35)':'';const ar=s>0?'▲':s<0?'▼':'=';return `<span class="rf-feat" style="${col}">${label} ${actual.toFixed(1)}/${tgt.toFixed(1)} ${ar}</span>`;};
   const corrNote=corrected
     ? (corr.confirmed
@@ -3542,11 +3582,10 @@ function rfRecCard(ex,agg,cls,eff,conf,corr,key,delta){
   const maxD=round1(curW);
   const sliderVal=corrDelta!==null?corrDelta:delta;
   const nSteps=curW>0?Math.round((maxD-minD)/step):0;
-  return `<div class="rf-rec${applied?' rf-applied':''}">
+  return `<div class="rf-rec">
     <div class="rf-rec-head">
       <span class="rf-rec-name">${esc(ex.name)}</span>
       <span class="rec-pill ${m.c}">${m.a} ${m.t}</span>
-      ${applied?'<span class="rf-applied-badge">✓ Aplicado</span>':''}
     </div>
     <div class="rf-weights">
       <span class="rf-wfrom">${curW} ${ul}</span>
@@ -3566,7 +3605,7 @@ function rfRecCard(ex,agg,cls,eff,conf,corr,key,delta){
     <div class="rf-bar"><div class="rf-bar-fill" style="width:${conf}%;background:${barColor}"></div></div>
     <div class="rf-conf" style="margin-bottom:12px">Random Forest vote confidence: ${conf}%</div>
     <div class="rf-rec-actions">
-      ${applied?'':`<button class="rf-apply" onclick="rfApplyOne('${ex.id}',${delta})">⤴ Aplicar ${newW} ${ul}</button>`}
+      <button class="rf-apply" onclick="rfApplyOne('${ex.id}',${delta})">⤴ Aplicar ${newW} ${ul}</button>
       <button class="rf-confirm" onclick="rfConfirm('${b}')">✓ Correcto</button>
     </div>
     <div class="rf-correct">
@@ -3594,32 +3633,34 @@ function rfNoDataCard(ex){
   </div>`;
 }
 function rfApplyOne(exId,delta){
-  const {w}=rfSelected();const ex=w?findExercise(w,exId):null;if(!ex)return;
-  if(rfApplied.has(exId))return;
+  const {r,w}=rfSelected();const ex=w?findExercise(w,exId):null;if(!ex||!r)return;
+  const key=r.name+'::'+w.name+'::'+ex.name;
+  const agg=rfAggregate(r.name,w.name,ex);
+  if(rfIsLocked(key,agg))return;                 // already consumed for this log
   const step=rfStepForUnit(ex.unit);
   ex.sets.forEach(s=>{s.weight=Math.max(0,snapMul((+s.weight)+delta,step));});
-  rfApplied.add(exId);
+  rfLockExercise(key,agg.lastDate);              // lock to the log we acted on
   saveRoutines();
-  showToast(ex.name+(delta>0?' +':delta<0?' ':' ±')+(delta?Math.abs(delta)+' '+unitLabel(ex.unit):'snapped')+' para la próxima sesión');
+  showToast(ex.name+(delta>0?' +':delta<0?' ':' ±')+(delta?Math.abs(delta)+' '+unitLabel(ex.unit):'snapped')+' · ayuda del RF pausada hasta tu próximo log');
   rfRun();
 }
 function rfApplyAll(){
-  const {r,w}=rfSelected();if(!w)return;const corr=loadCorrections();let n=0;
+  const {r,w}=rfSelected();if(!w||!r)return;const corr=loadCorrections();let n=0;
   w.exercises.forEach((ex)=>{
-    if(rfApplied.has(ex.id))return;
     const agg=rfAggregate(r.name,w.name,ex);
     if(!agg.sessions)return;
+    const key=r.name+'::'+w.name+'::'+ex.name;
+    if(rfIsLocked(key,agg))return;
     const feat=rfFeatures(agg);
     const cls=argmax(forestProbs(rfModel,feat));
-    const key=r.name+'::'+w.name+'::'+ex.name;
     const c=corr[key]; const eff=c?c.label:cls;
     const step=rfStepForUnit(ex.unit);
     const corrDelta=(c&&typeof c.delta==='number')?c.delta:null;
     const delta=corrDelta!==null?corrDelta:rfCalcDelta(eff,agg,step);
     ex.sets.forEach(s=>{s.weight=Math.max(0,snapMul((+s.weight)+delta,step));});
-    rfApplied.add(ex.id);n++;
+    rfLockExercise(key,agg.lastDate);n++;
   });
-  saveRoutines();showToast(n+' recomendación'+(n!==1?'es':'')+' aplicada'+(n!==1?'s':'')+' a '+w.name);rfRun();
+  saveRoutines();showToast(n+' recomendación'+(n!==1?'es':'')+' aplicada'+(n!==1?'s':'')+' a '+w.name+' · ayuda del RF pausada hasta tu próximo log');rfRun();
 }
 function rfSliderPreview(exId,val,curW,step,ul){
   const d=round1(+val);
