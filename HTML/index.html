@@ -2808,10 +2808,16 @@ function downloadFile(name,content,type){
 }
 function safeName(s){return String(s).replace(/[^\w\-]+/g,'_').slice(0,40)||'gymai';}
 function cloneRoutineFresh(r){
+  const validKeys=new Set(MUSCLE_GROUPS.map(g=>g.key));
+  const muscleKeyMap={'back':'upperback','lowerback':'upperback','erector':'upperback','traps':'upperback','forearms':'biceps'};
   return {id:uid(),name:r.name||'Imported',icon:r.icon||'📋',workouts:(r.workouts||[]).map(w=>({
     id:uid(),name:w.name||'Workout',exercises:(w.exercises||[]).map(e=>({
       id:uid(),name:e.name||'Exercise',meta:e.meta||'',unit:UNITS[e.unit]?e.unit:'kg',restSeconds:parseInt(e.restSeconds)||90,
-      muscles:Array.isArray(e.muscles)?e.muscles.filter(m=>m&&m.key).map(m=>({key:m.key,role:m.role==='primary'?'primary':'secondary'})):[],
+      muscles:Array.isArray(e.muscles)?e.muscles.filter(m=>m&&m.key).map(m=>{
+        let k=m.key.toLowerCase();
+        if(muscleKeyMap[k])k=muscleKeyMap[k];
+        return validKeys.has(k)?{key:k,role:m.role==='primary'?'primary':'secondary'}:null;
+      }).filter(m=>m):[],
       sets:(e.sets||[]).map(s=>({reps:+s.reps||0,rir:+s.rir||0,weight:+s.weight||0}))
     }))
   }))};
