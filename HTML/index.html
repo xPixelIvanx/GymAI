@@ -3930,6 +3930,7 @@ window.addEventListener('cloud-auth',async e=>{
   routines=loadRoutines();
   renderProfile(); renderCrew(); renderFooter();
   if(typeof renderRM==='function')renderRM();
+  if(typeof rfSync==='function')rfSync();
 });
 /* ---- friendships: subscribe + derive lists + fetch friend pubs ---- */
 function cloudSubscribeCrewInvites(){
