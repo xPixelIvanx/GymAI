@@ -1,0 +1,569 @@
+{
+  "_comment": "GymAI Routine Manager Complete Template — Shows ALL features and data structures",
+  "_description": "This file demonstrates every feature of GymAI's Routine Manager. Use this as a reference for importing custom routines or building AI-generated training programs.",
+  "_version": "2.0",
+
+  "routines": [
+    {
+      "id": "unique-uuid-here",
+      "name": "Complete Demo Routine",
+      "icon": "💪",
+      "_description": "A Routine is a collection of Workouts. Each routine is self-contained and can be selected in the Routine Manager.",
+
+      "workouts": [
+        {
+          "id": "unique-uuid-workout",
+          "name": "Upper Body Push",
+          "_description": "A Workout is a training session with multiple exercises. Select a routine, then select a workout to see its exercises and log sets.",
+          "_features": [
+            "View all exercises in the workout",
+            "Log actual reps/RIR/weight for each set",
+            "Track rest times between sets",
+            "Get Random Forest recommendations based on 7-day performance",
+            "Export workout data as JSON",
+            "Import this workout into other routines"
+          ],
+
+          "exercises": [
+            {
+              "id": "ex-id-1",
+              "name": "Barbell Bench Press",
+              "meta": "Primary · Horizontal Push",
+              "_description": "Exercise metadata appears below the name in the UI. Use it to note muscle group and lift type.",
+              "unit": "kg",
+              "_unit_options": ["kg", "lb", "kg_db", "lb_db"],
+              "_unit_explanation": {
+                "kg": "Kilograms (barbell/machine standard)",
+                "lb": "Pounds (US standard)",
+                "kg_db": "Kilograms dumbbell (2.5kg increments for RF progression)",
+                "lb_db": "Pounds dumbbell (5lb increments for RF progression)"
+              },
+
+              "restSeconds": 150,
+              "_restSeconds_note": "Time between sets. Used in session timer during workout logging.",
+
+              "sets": [
+                {
+                  "reps": 8,
+                  "rir": 2,
+                  "weight": 82.5,
+                  "_set_explanation": {
+                    "reps": "Target reps for this set",
+                    "rir": "Reps In Reserve (how many reps left in tank before failure)",
+                    "weight": "Target weight for this set (unit matches exercise.unit)"
+                  }
+                },
+                {
+                  "reps": 8,
+                  "rir": 2,
+                  "weight": 82.5,
+                  "_note": "Multiple sets represent a progression scheme"
+                },
+                {
+                  "reps": 6,
+                  "rir": 1,
+                  "weight": 85,
+                  "_note": "Sets can have different reps/RIR/weight. This one is heavier but fewer reps."
+                }
+              ],
+
+              "muscles": [
+                {
+                  "key": "chest",
+                  "role": "primary",
+                  "_roles": ["primary", "secondary"]
+                },
+                {
+                  "key": "triceps",
+                  "role": "secondary"
+                },
+                {
+                  "key": "shoulders",
+                  "role": "secondary"
+                }
+              ],
+              "_muscles_note": "Used for the Athlete Profile radar chart. Each exercise tags primary and secondary muscles. Seeds include ~35 common exercises with auto-tagged muscles."
+            },
+
+            {
+              "id": "ex-id-2",
+              "name": "Dumbbell Incline Press",
+              "meta": "Secondary · Upper Chest",
+              "unit": "kg_db",
+              "restSeconds": 120,
+              "sets": [
+                {"reps": 10, "rir": 2, "weight": 26},
+                {"reps": 10, "rir": 2, "weight": 26},
+                {"reps": 10, "rir": 2, "weight": 26}
+              ],
+              "muscles": [
+                {"key": "chest", "role": "primary"},
+                {"key": "shoulders", "role": "secondary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-3",
+              "name": "Machine Chest Fly",
+              "meta": "Isolation · Chest Peak",
+              "unit": "kg",
+              "restSeconds": 90,
+              "sets": [
+                {"reps": 12, "rir": 3, "weight": 50},
+                {"reps": 12, "rir": 3, "weight": 50},
+                {"reps": 12, "rir": 3, "weight": 50}
+              ],
+              "muscles": [
+                {"key": "chest", "role": "primary"}
+              ],
+              "_note": "Isolation exercises have one primary muscle and no secondaries"
+            },
+
+            {
+              "id": "ex-id-4",
+              "name": "Barbell Overhead Press",
+              "meta": "Primary · Vertical Push",
+              "unit": "kg",
+              "restSeconds": 150,
+              "sets": [
+                {"reps": 8, "rir": 2, "weight": 45},
+                {"reps": 8, "rir": 2, "weight": 45},
+                {"reps": 8, "rir": 2, "weight": 45}
+              ],
+              "muscles": [
+                {"key": "shoulders", "role": "primary"},
+                {"key": "triceps", "role": "secondary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-5",
+              "name": "Cable Lateral Raise",
+              "meta": "Isolation · Medial Delt",
+              "unit": "kg",
+              "restSeconds": 60,
+              "sets": [
+                {"reps": 15, "rir": 3, "weight": 10},
+                {"reps": 15, "rir": 3, "weight": 10},
+                {"reps": 15, "rir": 3, "weight": 10},
+                {"reps": 15, "rir": 3, "weight": 10}
+              ],
+              "muscles": [
+                {"key": "shoulders", "role": "primary"}
+              ],
+              "_note": "4 sets for higher rep isolation work"
+            },
+
+            {
+              "id": "ex-id-6",
+              "name": "Rope Tricep Pushdown",
+              "meta": "Isolation · Long Head Tricep",
+              "unit": "kg",
+              "restSeconds": 75,
+              "sets": [
+                {"reps": 12, "rir": 2, "weight": 15},
+                {"reps": 12, "rir": 2, "weight": 15},
+                {"reps": 12, "rir": 2, "weight": 15}
+              ],
+              "muscles": [
+                {"key": "triceps", "role": "primary"}
+              ]
+            }
+          ]
+        },
+
+        {
+          "id": "unique-uuid-workout-2",
+          "name": "Lower Body Strength",
+          "_description": "Different workout = different set of exercises. Routines typically have 3-6 workouts.",
+
+          "exercises": [
+            {
+              "id": "ex-id-7",
+              "name": "Barbell Back Squat",
+              "meta": "Primary · Quads & Glutes",
+              "unit": "kg",
+              "restSeconds": 180,
+              "sets": [
+                {"reps": 5, "rir": 2, "weight": 120},
+                {"reps": 5, "rir": 2, "weight": 120},
+                {"reps": 5, "rir": 1, "weight": 125}
+              ],
+              "muscles": [
+                {"key": "quads", "role": "primary"},
+                {"key": "glutes", "role": "secondary"}
+              ],
+              "_note": "Longer rest for compound lower body lifts"
+            },
+
+            {
+              "id": "ex-id-8",
+              "name": "Romanian Deadlift",
+              "meta": "Primary · Hamstrings",
+              "unit": "kg",
+              "restSeconds": 150,
+              "sets": [
+                {"reps": 8, "rir": 2, "weight": 100},
+                {"reps": 8, "rir": 2, "weight": 100},
+                {"reps": 8, "rir": 2, "weight": 100}
+              ],
+              "muscles": [
+                {"key": "hamstrings", "role": "primary"},
+                {"key": "glutes", "role": "secondary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-9",
+              "name": "Leg Press",
+              "meta": "Secondary · Quad Drive",
+              "unit": "kg",
+              "restSeconds": 120,
+              "sets": [
+                {"reps": 10, "rir": 2, "weight": 160},
+                {"reps": 10, "rir": 2, "weight": 160},
+                {"reps": 10, "rir": 2, "weight": 160}
+              ],
+              "muscles": [
+                {"key": "quads", "role": "primary"},
+                {"key": "glutes", "role": "secondary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-10",
+              "name": "Leg Curl Machine",
+              "meta": "Isolation · Hamstrings",
+              "unit": "kg",
+              "restSeconds": 90,
+              "sets": [
+                {"reps": 12, "rir": 2, "weight": 50},
+                {"reps": 12, "rir": 2, "weight": 50},
+                {"reps": 12, "rir": 2, "weight": 50}
+              ],
+              "muscles": [
+                {"key": "hamstrings", "role": "primary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-11",
+              "name": "Leg Extension Machine",
+              "meta": "Isolation · Quads Peak",
+              "unit": "kg",
+              "restSeconds": 60,
+              "sets": [
+                {"reps": 15, "rir": 3, "weight": 60},
+                {"reps": 15, "rir": 3, "weight": 60},
+                {"reps": 15, "rir": 3, "weight": 60}
+              ],
+              "muscles": [
+                {"key": "quads", "role": "primary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-12",
+              "name": "Standing Calf Raise",
+              "meta": "Isolation · Calves",
+              "unit": "kg",
+              "restSeconds": 60,
+              "sets": [
+                {"reps": 15, "rir": 2, "weight": 40},
+                {"reps": 15, "rir": 2, "weight": 40},
+                {"reps": 15, "rir": 2, "weight": 40},
+                {"reps": 15, "rir": 2, "weight": 40}
+              ],
+              "muscles": [
+                {"key": "calves", "role": "primary"}
+              ]
+            }
+          ]
+        },
+
+        {
+          "id": "unique-uuid-workout-3",
+          "name": "Back & Pull",
+          "_description": "Workout 3 of the routine",
+
+          "exercises": [
+            {
+              "id": "ex-id-13",
+              "name": "Barbell Deadlift",
+              "meta": "Primary · Full Posterior Chain",
+              "unit": "kg",
+              "restSeconds": 180,
+              "sets": [
+                {"reps": 5, "rir": 2, "weight": 140},
+                {"reps": 5, "rir": 2, "weight": 140},
+                {"reps": 3, "rir": 1, "weight": 150}
+              ],
+              "muscles": [
+                {"key": "upperback", "role": "primary"},
+                {"key": "hamstrings", "role": "secondary"},
+                {"key": "glutes", "role": "secondary"}
+              ],
+              "_note": "Compound lift with multiple secondary muscles"
+            },
+
+            {
+              "id": "ex-id-14",
+              "name": "Weighted Pull-Ups",
+              "meta": "Primary · Vertical Pull",
+              "unit": "kg",
+              "restSeconds": 150,
+              "sets": [
+                {"reps": 8, "rir": 2, "weight": 20},
+                {"reps": 8, "rir": 2, "weight": 20},
+                {"reps": 6, "rir": 1, "weight": 25}
+              ],
+              "muscles": [
+                {"key": "lats", "role": "primary"},
+                {"key": "biceps", "role": "secondary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-15",
+              "name": "Barbell Row",
+              "meta": "Primary · Horizontal Pull",
+              "unit": "kg",
+              "restSeconds": 120,
+              "sets": [
+                {"reps": 8, "rir": 2, "weight": 100},
+                {"reps": 8, "rir": 2, "weight": 100},
+                {"reps": 8, "rir": 2, "weight": 100}
+              ],
+              "muscles": [
+                {"key": "upperback", "role": "primary"},
+                {"key": "lats", "role": "secondary"},
+                {"key": "biceps", "role": "secondary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-16",
+              "name": "Lat Pulldown",
+              "meta": "Secondary · Lats",
+              "unit": "kg",
+              "restSeconds": 90,
+              "sets": [
+                {"reps": 12, "rir": 2, "weight": 80},
+                {"reps": 12, "rir": 2, "weight": 80},
+                {"reps": 12, "rir": 2, "weight": 80}
+              ],
+              "muscles": [
+                {"key": "lats", "role": "primary"},
+                {"key": "biceps", "role": "secondary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-17",
+              "name": "Machine Row",
+              "meta": "Isolation · Mid Back",
+              "unit": "kg",
+              "restSeconds": 90,
+              "sets": [
+                {"reps": 12, "rir": 2, "weight": 90},
+                {"reps": 12, "rir": 2, "weight": 90},
+                {"reps": 12, "rir": 2, "weight": 90}
+              ],
+              "muscles": [
+                {"key": "upperback", "role": "primary"}
+              ]
+            },
+
+            {
+              "id": "ex-id-18",
+              "name": "Dumbbell Curl",
+              "meta": "Isolation · Biceps",
+              "unit": "kg_db",
+              "restSeconds": 75,
+              "sets": [
+                {"reps": 10, "rir": 2, "weight": 16},
+                {"reps": 10, "rir": 2, "weight": 16},
+                {"reps": 10, "rir": 2, "weight": 16}
+              ],
+              "muscles": [
+                {"key": "biceps", "role": "primary"}
+              ]
+            }
+          ]
+        }
+      ]
+    },
+
+    {
+      "id": "short-routine-id",
+      "name": "Quick Full Body",
+      "icon": "⚡",
+      "_description": "Routine with just 1 workout (minimal example)",
+
+      "workouts": [
+        {
+          "id": "full-body-id",
+          "name": "Total Body Session",
+
+          "exercises": [
+            {
+              "id": "fb-1",
+              "name": "Barbell Bench Press",
+              "meta": "Primary · Push",
+              "unit": "kg",
+              "restSeconds": 150,
+              "sets": [
+                {"reps": 8, "rir": 2, "weight": 80}
+              ],
+              "muscles": [
+                {"key": "chest", "role": "primary"},
+                {"key": "triceps", "role": "secondary"}
+              ]
+            },
+            {
+              "id": "fb-2",
+              "name": "Barbell Squat",
+              "meta": "Primary · Legs",
+              "unit": "kg",
+              "restSeconds": 180,
+              "sets": [
+                {"reps": 8, "rir": 2, "weight": 100}
+              ],
+              "muscles": [
+                {"key": "quads", "role": "primary"},
+                {"key": "glutes", "role": "secondary"}
+              ]
+            },
+            {
+              "id": "fb-3",
+              "name": "Barbell Row",
+              "meta": "Primary · Pull",
+              "unit": "kg",
+              "restSeconds": 120,
+              "sets": [
+                {"reps": 8, "rir": 2, "weight": 100}
+              ],
+              "muscles": [
+                {"key": "upperback", "role": "primary"},
+                {"key": "lats", "role": "secondary"}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+
+  "_complete_feature_list": {
+    "routine_manager": {
+      "create": "Create new routines with custom names and emojis",
+      "import_export": "Import/export routines as JSON files",
+      "duplicate": "Clone entire routines with all workouts & exercises",
+      "rename": "Edit routine name and icon",
+      "delete": "Remove routine and all its data"
+    },
+
+    "workout_operations": {
+      "create": "Add workouts to a routine",
+      "reorder": "Drag to reorder workouts",
+      "edit": "Rename workouts",
+      "duplicate": "Clone workout into same or different routine",
+      "delete": "Remove workout from routine"
+    },
+
+    "exercise_operations": {
+      "create": "Add exercises to a workout",
+      "search": "~35 seed exercises with auto-tagged muscles",
+      "reorder": "Drag to reorder exercises",
+      "edit": "Edit name, meta, rest time, sets",
+      "delete": "Remove exercise from workout",
+      "duplicate": "Clone exercise in same workout",
+      "sets_management": "Add/remove/edit individual sets"
+    },
+
+    "set_structure": {
+      "reps": "Target reps (e.g., 8)",
+      "rir": "Reps In Reserve (0-3+)",
+      "weight": "Target weight in exercise unit"
+    },
+
+    "muscle_tagging": {
+      "purpose": "Powers the Athlete Profile radar chart",
+      "primary_muscles": "muscle::primary role",
+      "secondary_muscles": "muscle::secondary role",
+      "seed_coverage": "~35 common exercises come pre-tagged",
+      "radar_aggregation": "Combines all exercises → weekly volume per muscle"
+    },
+
+    "session_logging": {
+      "access": "Routine Manager → select workout → 'Start Session'",
+      "timer": "Rest timer between sets (based on exercise.restSeconds)",
+      "actual_data": "Log actual reps, RIR, weight for each set",
+      "notes": "Add notes to session (optional)",
+      "save": "Saves to War Journal in account"
+    },
+
+    "random_forest_ai_engine": {
+      "analysis": "Reads last 7 days of actual War Journal data",
+      "comparison": "Compares actual vs target (reps/RIR/weight)",
+      "recommendation": "5-class classifier: ↓↓ BAJAR MUCHO · ↓ BAJAR · ＝ MANTENER · ↑ SUBIR · ↑↑ SUBIR MUCHO",
+      "smart_magnitude": "Suggests specific weight increment based on performance gap",
+      "unit_multiples": "kg→2.5, kg_db→2, lb/lb_db→5",
+      "apply_individual": "Apply recommendation to ONE exercise",
+      "apply_all": "Apply recommendations to all exercises in workout",
+      "slider_correction": "Adjust delta with range slider (respects multiples)",
+      "train_model": "Each correction retrains the Random Forest",
+      "confidence": "Shows % confidence for each recommendation"
+    },
+
+    "war_journal": {
+      "logging": "Log sessions from Routine Manager",
+      "filters": "View by routine, workout, or date",
+      "export": "Export journal data as JSON",
+      "analytics": "Powers the Random Forest engine"
+    },
+
+    "athlete_profile": {
+      "biometrics": "Name, age, sex, height, weight, body fat%",
+      "radar_chart": "Visualizes volume per muscle group (last 7 days)",
+      "best_prs": "Auto-tracks PR by muscle from War Journal"
+    },
+
+    "account_features": {
+      "google_signin": "Login with Google",
+      "firebase_sync": "All data syncs to account in Firestore",
+      "multi_device": "Login on different devices → see same data",
+      "logout": "Clears all local data for privacy"
+    }
+  },
+
+  "_import_instructions": {
+    "step1": "Copy this entire JSON file (or part of it)",
+    "step2": "In GymAI Routine Manager → ⤒ Import Routine",
+    "step3": "Paste the JSON",
+    "step4": "GymAI parses and adds to your routines"
+  },
+
+  "_units_explained": {
+    "kg": "2.5kg increments (RF progression): 2.5, 5, 7.5, 10, 12.5, 15…",
+    "lb": "5lb increments (RF progression): 5, 10, 15, 20, 25…",
+    "kg_db": "2kg increments (dumbbell pairs): 2, 4, 6, 8, 10…",
+    "lb_db": "5lb increments (dumbbell pairs): 5, 10, 15, 20, 25…"
+  },
+
+  "_muscle_keys": [
+    "chest", "back", "lats", "upperback", "shoulders",
+    "triceps", "biceps", "forearms", "traps",
+    "quads", "hamstrings", "glutes", "calves",
+    "abs", "obliques", "lowerback", "erector"
+  ],
+
+  "_tips_for_creators": {
+    "ai_generation": "Use this structure to generate routines. GymAI's RF learns from real data, so realistic progressions matter.",
+    "realistic_progressions": "Don't exceed 2-3x multipliers between lightest and heaviest set in a workout.",
+    "set_variety": "Mix rep ranges: 5-8 for strength, 8-12 for hypertrophy, 12-20 for endurance.",
+    "muscle_balance": "Pair primary movers (chest+back, push+pull, quads+hamstrings).",
+    "rest_times": "Compound (strength): 150-180s. Hypertrophy: 60-120s. Isolation: 45-90s.",
+    "auto_tagging": "If exercise name matches a seed (e.g., 'Barbell Bench Press'), muscles auto-populate on import."
+  }
+}
