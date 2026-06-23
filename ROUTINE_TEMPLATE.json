@@ -7,6 +7,14 @@
   "name": "💪 Complete Feature Demo",
   "icon": "💪",
 
+  "complexity": 2,
+  "_complexity_levels": {
+    "1": "Simple — sets show as 'N × reps @ weight', no RIR. Set fields: {reps, weight}.",
+    "2": "Standard (default if omitted) — RIR per set, variable loads. Set fields: {reps, rir, weight}.",
+    "3": "Advanced — adds optional set fields: tempo, type, note, dropsets (see _advanced_set_example below).",
+    "_note": "Routines without this field are treated as level 2. Lowering the level never deletes data, it just hides fields."
+  },
+
   "workouts": [
     {
       "id": "workout-push-uuid",
@@ -40,6 +48,14 @@
             "reps": "Target reps (e.g., 8)",
             "rir": "Reps In Reserve: how many reps before failure (0-3+)",
             "weight": "Target weight in exercise.unit"
+          },
+          "_advanced_set_example": {
+            "_note": "Only used when routine complexity is 3. All fields below are OPTIONAL.",
+            "reps": 6, "rir": 1, "weight": 100,
+            "type": "working | warmup | backoff | amrap | restpause | cluster",
+            "tempo": "3-1-2-0 (eccentric-pause-concentric-pause, seconds)",
+            "note": "Free text shown per set, e.g. 'Pausa 2s en el pecho'",
+            "dropsets": [{"reps": 8, "weight": 80}, {"reps": 12, "weight": 60}]
           },
 
           "muscles": [
