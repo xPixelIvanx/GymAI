@@ -1528,7 +1528,8 @@ function seedRoutines(){
   return data;
 }
 function loadRoutines(){
-  const signed=typeof cloudState!=='undefined'&&cloudState&&cloudState.user;
+  let signed=false;
+  try{signed=!!(cloudState&&cloudState.user);}catch(e){}
   const r=JSON.parse(localStorage.getItem(aKey(RKEY))||'null');
   if(r&&r.length)return r;
   return signed?seedRoutines():[];
