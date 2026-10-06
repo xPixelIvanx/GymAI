@@ -522,6 +522,12 @@ input,select{font-family:var(--font)}
 .bl-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .bl-sec{font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--gray);margin:6px 0 10px}
 .bl-hint{font-size:12px;color:var(--gray);margin:-4px 0 14px}
+.cp-note{text-transform:none;letter-spacing:0;font-weight:400}
+.cp-seg{display:flex;flex-wrap:wrap;gap:6px}
+.cp-seg button,.cp-musc button{background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:9px 12px;font-size:13px;font-weight:600;color:var(--white60);cursor:pointer;font-family:inherit}
+.cp-seg button{flex:1}
+.cp-seg button.sel,.cp-musc button.sel{border-color:var(--blue);background:var(--blue-dim);color:#fff}
+.cp-musc{display:flex;flex-wrap:wrap;gap:6px}
 .bl-back{background:none;border:none;color:var(--blue);font-size:20px;cursor:pointer;padding:0 6px 0 0;vertical-align:-2px}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:20px}
 .toggle-label{font-size:13px;font-weight:500}
@@ -1530,6 +1536,9 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
 
 <!-- muscle PR logger (rendered by JS) -->
 <div id="pr-modal"></div>
+
+<!-- coach profile editor (rendered by JS) -->
+<div id="coach-modal" class="modal-overlay"></div>
 
 <!-- body log: list + add/edit entry (rendered by JS) -->
 <div id="bodylog-modal" class="modal-overlay"></div>
@@ -4613,6 +4622,8 @@ function profileCV(p){
       <div class="cv-gauge-cat" style="color:var(--blue)">${bfCategory(p.bodyFat,p.sex).label} range</div>
     </div></div>
 
+    ${coachSectionHTML()}
+
     ${muscleRanksSection()}
 
     <button class="pf-cta" style="width:100%;margin-top:22px" onclick="profileWizardStart()">✎ Update my data</button>
@@ -4744,6 +4755,206 @@ function bodyLogDelete(id){
 function bodyLogAfterChange(){
   renderProfile();
   if(typeof cloudSyncMe==='function')cloudSyncMe();
+}
+
+/* ══════════════════════════════════════
+   COACH PROFILE — context for the external AI coach (coach-gym Skill)
+   Firestore ONLY (users/{uid}/data/coachProfile, owner-only rules): kept in
+   memory for the session, never written to the device.
+   sex / age / heightCm are NOT stored here — they're read from (and edited
+   in) the athlete profile, so there is a single copy of each.
+   Enumerations are exactly the values SKILL.md understands; anything else is
+   replaced by the default. Unknown keys are preserved for future fields.
+══════════════════════════════════════ */
+const COACH_ENUMS={
+  phase:['cutting','bulking','recomp','maintenance'],
+  mode:['test','normal'],
+  reactionLevel:['conservative','proactive'],
+  responseLength:['short','detailed'],
+  certaintyLabels:['always','whenRelevant']
+};
+const COACH_DEFAULT_SETTINGS={mode:'test',reactionLevel:'conservative',responseLength:'short',certaintyLabels:'whenRelevant',explanationStyle:''};
+const COACH_LABELS={
+  cutting:'Definición',bulking:'Volumen',recomp:'Recomposición',maintenance:'Mantenimiento',
+  test:'Prueba',normal:'Normal',conservative:'Conservador',proactive:'Proactivo',
+  short:'Corta',detailed:'Detallada',always:'Siempre',whenRelevant:'Cuando sea relevante'
+};
+let coachState={status:'idle',data:null};   // idle | loading | ready | error
+function cStr(v){return typeof v==='string'?v.trim():'';}
+function cNum(v,max){const n=parseFloat(v);return (isFinite(n)&&n>0&&n<=max)?Math.round(n):null;}
+function cList(v){
+  const a=Array.isArray(v)?v:(typeof v==='string'?v.split(','):[]);
+  const out=[];a.forEach(x=>{const t=cStr(x);if(t&&!out.includes(t))out.push(t);});return out;
+}
+function cEnum(v,key,def){return COACH_ENUMS[key].includes(v)?v:def;}
+/* stored doc → normalized coach fields (defaults filled, unknown keys kept) */
+function normCoach(d){
+  d=(d&&typeof d==='object')?d:{};
+  const g=d.goal||{},av=d.availability||{},pr=d.preferences||{},nu=d.nutrition||{},cs=d.coachSettings||{};
+  const validM=new Set(MUSCLE_GROUPS.map(m=>m.key));
+  const out=Object.assign({},d,{
+    goal:Object.assign({},g,{phase:cEnum(g.phase,'phase',''),aestheticGoal:cStr(g.aestheticGoal),
+      priorityMuscles:cList(g.priorityMuscles).filter(k=>validM.has(k))}),
+    experience:cStr(d.experience),
+    availability:Object.assign({},av,{daysPerWeek:cNum(av.daysPerWeek,7),sessionMinutes:cNum(av.sessionMinutes,300)}),
+    equipment:cStr(d.equipment),
+    preferences:Object.assign({},pr,{liked:cList(pr.liked),avoided:cList(pr.avoided)}),
+    limitations:cStr(d.limitations),
+    nutrition:Object.assign({},nu,{calories:cNum(nu.calories,10000),proteinG:cNum(nu.proteinG,1000)}),
+    coachSettings:Object.assign({},cs,{
+      mode:cEnum(cs.mode,'mode',COACH_DEFAULT_SETTINGS.mode),
+      reactionLevel:cEnum(cs.reactionLevel,'reactionLevel',COACH_DEFAULT_SETTINGS.reactionLevel),
+      responseLength:cEnum(cs.responseLength,'responseLength',COACH_DEFAULT_SETTINGS.responseLength),
+      certaintyLabels:cEnum(cs.certaintyLabels,'certaintyLabels',COACH_DEFAULT_SETTINGS.certaintyLabels),
+      explanationStyle:cStr(cs.explanationStyle)})
+  });
+  delete out.sex;delete out.age;delete out.heightCm;delete out.updatedAt;   // never duplicated here
+  return out;
+}
+/* full coach profile in the documented shape: sex/age/heightCm from the athlete profile */
+function coachProfileFull(){
+  const p=loadProfile()||{}, c=normCoach(coachState.data);
+  return Object.assign({sex:p.sex||'',age:p.age!=null?+p.age:null,heightCm:p.heightCm!=null?+p.heightCm:null},
+    {goal:c.goal,experience:c.experience,availability:c.availability,equipment:c.equipment,
+     preferences:c.preferences,limitations:c.limitations,nutrition:c.nutrition,coachSettings:c.coachSettings},c);
+}
+async function coachLoad(){
+  if(!(window.Cloud&&window.Cloud.getCoachProfile&&cloudState.user)){coachState={status:'error',data:null};return;}
+  const uidAt=cloudState.user.uid;
+  coachState={status:'loading',data:null};
+  try{
+    const d=await window.Cloud.getCoachProfile(uidAt);
+    if(!cloudState.user||cloudState.user.uid!==uidAt)return;   // account switched meanwhile
+    coachState={status:'ready',data:normCoach(d)};
+  }catch(e){console.warn('[Coach] load failed',e);coachState={status:'error',data:null};}
+}
+
+/* ---- profile section ---- */
+function coachSectionHTML(){
+  const st=coachState.status;
+  let body;
+  if(st==='loading'||st==='idle')body=`<div class="bl-hint" style="margin:0">Cargando desde la nube…</div>`;
+  else if(st==='error')body=`<div class="bl-hint" style="margin:0 0 10px">No se pudo cargar (se guarda solo en la nube).</div><button class="rm-btn ghost" onclick="coachRetry()">↻ Reintentar</button>`;
+  else{
+    const c=coachProfileFull(),chips=[];
+    const L=k=>COACH_LABELS[k]||k;
+    if(c.goal.phase)chips.push(`<span class="bl-chip">🎯 <b>${L(c.goal.phase)}</b></span>`);
+    if(c.goal.priorityMuscles.length)chips.push(`<span class="bl-chip">Prioridad: ${c.goal.priorityMuscles.map(k=>esc(muscleByKey(k).label)).join(', ')}</span>`);
+    if(c.availability.daysPerWeek)chips.push(`<span class="bl-chip">📅 <b>${c.availability.daysPerWeek}</b> días/sem${c.availability.sessionMinutes?` · <b>${c.availability.sessionMinutes}</b> min`:''}</span>`);
+    if(c.nutrition.calories||c.nutrition.proteinG)chips.push(`<span class="bl-chip">🍽 ${c.nutrition.calories?`<b>${c.nutrition.calories}</b> kcal`:''}${c.nutrition.calories&&c.nutrition.proteinG?' · ':''}${c.nutrition.proteinG?`<b>${c.nutrition.proteinG}</b> g prot`:''}</span>`);
+    const cs=c.coachSettings;
+    chips.push(`<span class="bl-chip">⚙️ ${L(cs.mode)} · ${L(cs.reactionLevel)} · ${L(cs.responseLength)}</span>`);
+    body=`<div class="bl-chips" style="margin-bottom:12px">${chips.join('')}</div>
+      <button class="pf-social-btn" style="width:100%" onclick="coachOpen()">✎ Editar perfil del coach</button>`;
+  }
+  return `<div class="section-label" style="margin-top:22px">Perfil del coach</div>
+    <div class="cv-section"><div class="cv-gauge">${body}</div></div>`;
+}
+async function coachRetry(){coachState={status:'loading',data:null};renderProfile();await coachLoad();renderProfile();}
+
+/* ---- editor modal ---- */
+let coachDraft=null;   // working copy while the editor is open
+function coachOpen(){
+  if(coachState.status!=='ready'){showToast('El perfil del coach aún no carga');return;}
+  coachDraft=JSON.parse(JSON.stringify(coachProfileFull()));
+  document.getElementById('coach-modal').classList.add('show');
+  renderCoachEditor();
+}
+function coachClose(){document.getElementById('coach-modal').classList.remove('show');coachDraft=null;}
+/* keep typed text when re-rendering (chip / segment clicks) */
+function coachReadForm(){
+  const d=coachDraft,v=id=>{const el=document.getElementById(id);return el?el.value:'';};
+  if(!document.getElementById('cp-age'))return;
+  d.age=v('cp-age');d.heightCm=v('cp-height');
+  d.goal.aestheticGoal=v('cp-aesthetic');d.experience=v('cp-exp');
+  d.availability.daysPerWeek=v('cp-days');d.availability.sessionMinutes=v('cp-mins');
+  d.equipment=v('cp-equip');d.preferences.liked=v('cp-liked');d.preferences.avoided=v('cp-avoided');
+  d.limitations=v('cp-limits');d.nutrition.calories=v('cp-kcal');d.nutrition.proteinG=v('cp-prot');
+  d.coachSettings.explanationStyle=v('cp-style');
+}
+function coachSet(path,val){
+  coachReadForm();
+  const ks=path.split('.');let o=coachDraft;ks.slice(0,-1).forEach(k=>o=o[k]);o[ks[ks.length-1]]=val;
+  renderCoachEditor();
+}
+function coachToggleMuscle(k){
+  coachReadForm();
+  const a=coachDraft.goal.priorityMuscles,i=a.indexOf(k);
+  if(i>=0)a.splice(i,1);else a.push(k);
+  renderCoachEditor();
+}
+function renderCoachEditor(){
+  const root=document.getElementById('coach-modal');if(!root||!coachDraft)return;
+  const d=coachDraft,v=x=>x==null?'':esc(Array.isArray(x)?x.join(', '):x);
+  const scroll=root.querySelector('.pw-body')?root.querySelector('.pw-body').scrollTop:0;
+  const seg=(path,opts,cur)=>`<div class="cp-seg">${opts.map(o=>`<button class="${o===cur?'sel':''}" onclick="coachSet('${path}','${o}')">${COACH_LABELS[o]||(SEX_META[o]?SEX_META[o].ico+' '+SEX_META[o].label:o)}</button>`).join('')}</div>`;
+  const txt=(id,label,val,ph,extra)=>`<div class="bl-field"><label for="${id}">${label}</label><input id="${id}" class="crew-input" value="${v(val)}" placeholder="${ph||''}" ${extra||''}></div>`;
+  const num=(id,label,val,unit,max)=>`<div class="bl-field"><label for="${id}">${label}</label><div class="bl-inp"><input id="${id}" class="crew-input" type="number" inputmode="numeric" min="0" max="${max}" step="1" value="${v(val)}" placeholder="—"><span>${unit}</span></div></div>`;
+  root.innerHTML=`<div class="pw-card" style="max-width:520px">
+    <div class="pw-top"><div class="pw-step-count">🧠 PERFIL DEL COACH</div><button class="pw-close" onclick="coachClose()">✕</button></div>
+    <div class="pw-body" style="margin-top:16px">
+      <div class="bl-sec">Datos básicos <span class="cp-note">· los mismos de tu carta de atleta</span></div>
+      <div class="bl-field"><label>Sexo</label>${seg('sex',Object.keys(SEX_META),d.sex)}</div>
+      <div class="bl-grid">${num('cp-age','Edad',d.age,'años',90)}${num('cp-height','Altura',d.heightCm,'cm',220)}</div>
+
+      <div class="bl-sec">Objetivo</div>
+      <div class="bl-field"><label>Fase</label>${seg('goal.phase',COACH_ENUMS.phase,d.goal.phase)}</div>
+      ${txt('cp-aesthetic','Objetivo estético',d.goal.aestheticGoal,'ej. hombros más anchos, cintura marcada','maxlength="200"')}
+      <div class="bl-field"><label>Músculos prioritarios</label><div class="cp-musc">${MUSCLE_GROUPS.map(g=>`<button class="${d.goal.priorityMuscles.includes(g.key)?'sel':''}" onclick="coachToggleMuscle('${g.key}')">${g.ico} ${esc(g.label)}</button>`).join('')}</div></div>
+
+      <div class="bl-sec">Entrenamiento</div>
+      ${txt('cp-exp','Experiencia',d.experience,'ej. 3 años, intermedio','list="cp-exp-list" maxlength="120"')}
+      <datalist id="cp-exp-list"><option value="principiante"><option value="intermedio"><option value="avanzado"></datalist>
+      <div class="bl-grid">${num('cp-days','Días por semana',d.availability.daysPerWeek,'días',7)}${num('cp-mins','Minutos por sesión',d.availability.sessionMinutes,'min',300)}</div>
+      ${txt('cp-equip','Equipo disponible',d.equipment,'ej. gimnasio completo, mancuernas en casa','maxlength="200"')}
+      ${txt('cp-liked','Ejercicios que te gustan',d.preferences.liked,'separados por comas','maxlength="300"')}
+      ${txt('cp-avoided','Ejercicios a evitar',d.preferences.avoided,'separados por comas','maxlength="300"')}
+      <div class="bl-field"><label for="cp-limits">Limitaciones / lesiones</label><textarea id="cp-limits" class="crew-input" rows="2" maxlength="500" placeholder="Opcional">${v(d.limitations)}</textarea></div>
+
+      <div class="bl-sec">Nutrición</div>
+      <div class="bl-grid">${num('cp-kcal','Calorías',d.nutrition.calories,'kcal',10000)}${num('cp-prot','Proteína',d.nutrition.proteinG,'g',1000)}</div>
+
+      <div class="bl-sec">Ajustes del coach</div>
+      <div class="bl-field"><label>Modo</label>${seg('coachSettings.mode',COACH_ENUMS.mode,d.coachSettings.mode)}</div>
+      <div class="bl-field"><label>Nivel de reacción</label>${seg('coachSettings.reactionLevel',COACH_ENUMS.reactionLevel,d.coachSettings.reactionLevel)}</div>
+      <div class="bl-field"><label>Largo de respuesta</label>${seg('coachSettings.responseLength',COACH_ENUMS.responseLength,d.coachSettings.responseLength)}</div>
+      <div class="bl-field"><label>Etiquetas de certeza</label>${seg('coachSettings.certaintyLabels',COACH_ENUMS.certaintyLabels,d.coachSettings.certaintyLabels)}</div>
+      ${txt('cp-style','Estilo de explicación',d.coachSettings.explanationStyle,'ej. directo, con analogías','maxlength="200"')}
+    </div>
+    <div class="pw-nav">
+      <button class="pw-btn ghost" onclick="coachClose()">Cancelar</button>
+      <button class="pw-btn primary" id="cp-save" onclick="coachSave()">✓ Guardar</button>
+    </div>
+  </div>`;
+  const b=root.querySelector('.pw-body');if(b)b.scrollTop=scroll;
+}
+async function coachSave(){
+  coachReadForm();
+  const d=coachDraft;
+  // athlete-profile fields (same validation ranges as the wizard)
+  const age=d.age===''||d.age==null?null:parseInt(d.age), h=d.heightCm===''||d.heightCm==null?null:parseFloat(d.heightCm);
+  if(age!=null&&!(age>=13&&age<=90)){showToast('Edad: entre 13 y 90');return;}
+  if(h!=null&&!(h>=130&&h<=220)){showToast('Altura: entre 130 y 220 cm');return;}
+  const badNum=[['cp-days',7,'Días por semana'],['cp-mins',300,'Minutos por sesión'],['cp-kcal',10000,'Calorías'],['cp-prot',1000,'Proteína']]
+    .find(([id,max])=>{const r=(document.getElementById(id).value||'').trim();return r!==''&&cNum(r,max)==null;});
+  if(badNum){showToast(badNum[2]+': valor inválido (1–'+badNum[1]+')');return;}
+  const data=normCoach(d);
+  const btn=document.getElementById('cp-save');if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  try{
+    await window.Cloud.saveCoachProfile(cloudState.user.uid,data);
+  }catch(e){
+    console.warn('[Coach] save failed',e);
+    showToast('No se pudo guardar en la nube — revisa tu conexión');
+    if(btn){btn.disabled=false;btn.textContent='✓ Guardar';}
+    return;
+  }
+  coachState={status:'ready',data};
+  const p=loadProfile();
+  if(p&&(p.sex!==d.sex||+p.age!==age||+p.heightCm!==h)){
+    if(SEX_META[d.sex])p.sex=d.sex; if(age!=null)p.age=age; if(h!=null)p.heightCm=h;
+    saveProfileData(p);cloudPushProfile();cloudSyncMe();renderFooter();
+  }
+  coachClose();renderProfile();showToast('Perfil del coach guardado');
 }
 
 function positionGauges(p){
@@ -5128,6 +5339,7 @@ window.addEventListener('cloud-auth',async e=>{
   if(cloudState.unsubFriends){try{cloudState.unsubFriends();}catch(_){}cloudState.unsubFriends=null;}
   if(cloudState.unsubCrewInvites){try{cloudState.unsubCrewInvites();}catch(_){}cloudState.unsubCrewInvites=null;}
   cloudState.friendships=[]; cloudState.friendPubs={}; cloudState.crewInvites=[];
+  coachState={status:'idle',data:null};   // cloud-only: never carried across accounts
   if(cloudState.user){
     const uid=cloudState.user.uid;
     _profileHydrating=true;
@@ -5154,6 +5366,7 @@ window.addEventListener('cloud-auth',async e=>{
         else if(loadBodyLog().length)await cloudPushBodyLog();                 // no cloud doc yet → seed it
       }catch(_){}                                                              // read failed → keep local, push nothing
     }
+    await coachLoad();
     _profileHydrating=false;
     if(loadProfile())cloudSyncMe();
     cloudPushRoutines(); cloudPushJournal();
@@ -6005,9 +6218,9 @@ rfRun();
 // allow Enter to send a comment
 document.getElementById('comment-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendComment();});
 // close overlays on backdrop click
-['comments-overlay','routine-modal','doc-modal','profile-wizard','pr-modal','muscle-modal','bodylog-modal','crew-member-modal','friends-modal','crew-invite-modal','notifs-modal','chats-modal','chat-modal','send-picker-modal','rwpreview-modal'].forEach(id=>{
+['comments-overlay','routine-modal','doc-modal','profile-wizard','pr-modal','muscle-modal','bodylog-modal','coach-modal','crew-member-modal','friends-modal','crew-invite-modal','notifs-modal','chats-modal','chat-modal','send-picker-modal','rwpreview-modal'].forEach(id=>{
   const el=document.getElementById(id);
-  if(el)el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('show');if(id==='profile-wizard')pwState=null;if(id==='pr-modal')prState=null;if(id==='muscle-modal')meExId=null;if(id==='bodylog-modal')blState=null;}});
+  if(el)el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('show');if(id==='profile-wizard')pwState=null;if(id==='pr-modal')prState=null;if(id==='muscle-modal')meExId=null;if(id==='bodylog-modal')blState=null;if(id==='coach-modal')coachDraft=null;}});
 });
 
 /* ══════════════════════════════════════
@@ -6101,6 +6314,10 @@ window.Cloud = {
      error for "empty" and overwrite the cloud copy. */
   saveBodyLog: (uid,list)=>setDoc(doc(db,'users',uid,'data','bodyLog'),{payload:JSON.stringify(list),updatedAt:serverTimestamp()}),
   getBodyLog: async (uid)=>{ const s=await getDoc(doc(db,'users',uid,'data','bodyLog')); return s.exists()?JSON.parse(s.data().payload||'[]'):null; },
+  /* coach profile: owner-only doc users/{uid}/data/coachProfile (native fields).
+     getCoachProfile THROWS on failure; null = not created yet. */
+  saveCoachProfile: (uid,data)=>setDoc(doc(db,'users',uid,'data','coachProfile'),Object.assign({},data,{updatedAt:serverTimestamp()})),
+  getCoachProfile: async (uid)=>{ const s=await getDoc(doc(db,'users',uid,'data','coachProfile')); return s.exists()?s.data():null; },
   createCrew: async (uid,name)=>{
     let code='';
     for(let i=0;i<8;i++){ code=genCode(); const s=await getDoc(doc(db,'crews',code)); if(!s.exists()) break; }
