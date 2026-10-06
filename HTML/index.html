@@ -502,6 +502,27 @@ input,select{font-family:var(--font)}
 .bio-label{font-size:9px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--gray);margin-bottom:8px}
 .bio-val{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--white)}
 .bio-unit{font-size:10px;color:var(--gray);margin-top:2px}
+/* body log */
+.bl-sum{margin:-8px 0 20px}
+.bl-chips{display:flex;flex-wrap:wrap;gap:6px}
+.bl-chip{background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:5px 9px;font-size:12px;color:var(--white60)}
+.bl-chip b{color:#fff;font-family:var(--mono)}
+.bl-chip i{font-style:normal;color:var(--gray);font-size:11px}
+.bl-chip.w{border-color:var(--blue-mid)}
+.bl-row{background:var(--card2);border:1px solid var(--border);border-radius:14px;padding:12px 14px;margin-bottom:10px}
+.bl-row-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.bl-date{font-weight:700;font-size:14px}
+.bl-acts button{background:transparent;border:none;color:var(--gray);font-size:15px;cursor:pointer;padding:4px 8px}
+.bl-acts button:hover{color:#fff}.bl-acts button.del:hover{color:var(--red)}
+.bl-note{margin-top:8px;font-size:12px;color:var(--white60);white-space:pre-wrap}
+.bl-field{margin-bottom:12px}
+.bl-field label{display:block;font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--gray);margin-bottom:6px}
+.bl-inp{position:relative}.bl-inp .crew-input{padding-right:38px}
+.bl-inp span{position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--gray);pointer-events:none}
+.bl-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.bl-sec{font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--gray);margin:6px 0 10px}
+.bl-hint{font-size:12px;color:var(--gray);margin:-4px 0 14px}
+.bl-back{background:none;border:none;color:var(--blue);font-size:20px;cursor:pointer;padding:0 6px 0 0;vertical-align:-2px}
 .toggle-row{display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 18px;margin-bottom:20px}
 .toggle-label{font-size:13px;font-weight:500}
 .toggle-sub{font-size:11px;color:var(--gray);margin-top:2px}
@@ -1510,6 +1531,9 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
 <!-- muscle PR logger (rendered by JS) -->
 <div id="pr-modal"></div>
 
+<!-- body log: list + add/edit entry (rendered by JS) -->
+<div id="bodylog-modal" class="modal-overlay"></div>
+
 <!-- exercise muscle-group editor (rendered by JS) -->
 <div id="muscle-modal" class="modal-overlay"></div>
 
@@ -2069,7 +2093,7 @@ async function generarRutinaConContexto(payload){
   }
 
   // 3) Perfil completo del atleta (edad, sexo, peso, altura, etc.)
-  const p=loadProfile()||{};
+  const p=effProfile()||{};
   const sexo=p.sex?(p.sex==='female'?'mujer':'hombre'):'no especificado';
   const perfil=[
     `- Nombre: ${p.name||'no especificado'}`,
@@ -4111,6 +4135,104 @@ function loadProfile(){try{return JSON.parse(localStorage.getItem(aKey(PFKEY))||
 function saveProfileData(p){localStorage.setItem(aKey(PFKEY),JSON.stringify(p));}
 const SEX_META={male:{ico:'♂',label:'Male'},female:{ico:'♀',label:'Female'}};
 
+/* ══════════════════════════════════════
+   BODY LOG — dated entries (weight, body fat, tape measurements)
+   Stored in Firestore at users/{uid}/data/bodyLog as ONE doc holding a JSON
+   array (same pattern as routines/journal, covered by the existing owner-only
+   rules) with a per-account local cache so it works offline.
+   Entry: {id,date:"YYYY-MM-DD",weightKg,bodyFatPercent,bodyFatMethod,
+           measurementsCm:{waist,chest,arm,thigh},note, …extras}
+   • Every field except `date` is optional (null = not measured).
+   • Unknown keys (top level or inside measurementsCm) are PRESERVED by the
+     normalizer and by edits, so new optional fields (sleepHours, …) can be
+     added later with no migration.
+   • One entry per date: logging the same day again updates that entry.
+══════════════════════════════════════ */
+const BLKEY='gymAI_bodylog_v1', BLDIRTY='gymAI_bodylog_dirty_v1';
+const BODY_M_KEYS=['waist','chest','arm','thigh'];
+const BODY_M_LABELS={waist:'Cintura',chest:'Pecho',arm:'Brazo',thigh:'Muslo'};
+function pad2(n){return String(n).padStart(2,'0');}
+function todayStr(){const d=new Date();return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
+function validYMD(s){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s||''))return false;
+  const [y,m,d]=s.split('-').map(Number),t=new Date(y,m-1,d);
+  return t.getFullYear()===y&&t.getMonth()===m-1&&t.getDate()===d;
+}
+/* "YYYY-MM-DD" is a calendar date, not an instant: build it in local time
+   (new Date('2026-10-06') is UTC and shows the previous day west of UTC) */
+function fmtBodyDate(ymd,withYear){
+  if(!validYMD(ymd))return ymd||'';
+  const [y,m,d]=ymd.split('-').map(Number);
+  return new Date(y,m-1,d).toLocaleDateString(undefined,withYear===false?{day:'2-digit',month:'short'}:{day:'2-digit',month:'short',year:'numeric'});
+}
+/* positive finite number ≤ max, else null (empty / negative / junk → not measured) */
+function bodyNum(v,max){
+  if(v===''||v==null)return null;
+  const n=typeof v==='number'?v:parseFloat(v);
+  return (isFinite(n)&&n>0&&n<=max)?Math.round(n*10)/10:null;
+}
+function normBodyEntry(e){
+  e=e||{};
+  const m=(e.measurementsCm&&typeof e.measurementsCm==='object')?e.measurementsCm:{};
+  const meas=Object.assign({},m);
+  BODY_M_KEYS.forEach(k=>{meas[k]=bodyNum(m[k],300);});
+  const method=(typeof e.bodyFatMethod==='string'&&e.bodyFatMethod.trim())?e.bodyFatMethod.trim():null;
+  return Object.assign({},e,{
+    id:e.id||uid(), date:String(e.date||'').slice(0,10),
+    weightKg:bodyNum(e.weightKg,500), bodyFatPercent:bodyNum(e.bodyFatPercent,75), bodyFatMethod:method,
+    measurementsCm:meas, note:typeof e.note==='string'?e.note.trim():''
+  });
+}
+function bodySort(list){
+  return list.sort((a,b)=>(a.date<b.date?1:a.date>b.date?-1:String(b.updatedAt||'').localeCompare(String(a.updatedAt||''))));
+}
+function loadBodyLog(){
+  let raw=[];try{raw=JSON.parse(localStorage.getItem(aKey(BLKEY))||'[]');}catch(e){}
+  if(!Array.isArray(raw))raw=[];
+  return bodySort(raw.filter(e=>e&&validYMD(String(e.date||'').slice(0,10))).map(normBodyEntry)); // newest first
+}
+function saveBodyLog(list){
+  localStorage.setItem(aKey(BLKEY),JSON.stringify(bodySort(list.map(normBodyEntry))));
+  localStorage.setItem(aKey(BLDIRTY),'1');   // unsynced local change: never overwritten by a cloud read
+  return cloudPushBodyLog();
+}
+function cloudPushBodyLog(){
+  if(!(window.Cloud&&window.Cloud.saveBodyLog&&cloudState.user))return Promise.resolve();
+  const dirtyKey=aKey(BLDIRTY);
+  return window.Cloud.saveBodyLog(cloudState.user.uid,loadBodyLog())
+    .then(()=>{localStorage.removeItem(dirtyKey);})
+    .catch(e=>{console.warn('[BodyLog] sync failed',e);showToast('Registro corporal guardado en este dispositivo · pendiente de sincronizar');});
+}
+/* latest known value of each field (an entry may hold only some fields) */
+function bodyLogLatest(){
+  const out={weightKg:null,weightDate:null,bodyFatPercent:null,bodyFatDate:null,bodyFatMethod:null,measurementsCm:{},measurementDates:{}};
+  loadBodyLog().forEach(e=>{
+    if(out.weightKg==null&&e.weightKg!=null){out.weightKg=e.weightKg;out.weightDate=e.date;}
+    if(out.bodyFatPercent==null&&e.bodyFatPercent!=null){out.bodyFatPercent=e.bodyFatPercent;out.bodyFatDate=e.date;out.bodyFatMethod=e.bodyFatMethod;}
+    BODY_M_KEYS.forEach(k=>{if(out.measurementsCm[k]==null&&e.measurementsCm[k]!=null){out.measurementsCm[k]=e.measurementsCm[k];out.measurementDates[k]=e.date;}});
+  });
+  return out;
+}
+/* profile with weight / body fat taken from the body log when it has them
+   (the profile's own values remain the fallback for accounts with no log yet) */
+function effProfile(){
+  const p=loadProfile();if(!p)return p;
+  const L=bodyLogLatest();
+  return Object.assign({},p,{
+    weightKg:L.weightKg!=null?L.weightKg:p.weightKg,
+    bodyFat:L.bodyFatPercent!=null?L.bodyFatPercent:p.bodyFat
+  });
+}
+/* upsert today's entry with only the given fields (null/undefined = leave as is) */
+function bodyLogUpsertToday(fields){
+  const list=loadBodyLog(),today=todayStr();
+  let e=list.find(x=>x.date===today);
+  if(!e){e=normBodyEntry({id:uid(),date:today,createdAt:new Date().toISOString()});list.push(e);}
+  Object.keys(fields).forEach(k=>{if(fields[k]!=null)e[k]=fields[k];});
+  e.updatedAt=new Date().toISOString();
+  return saveBodyLog(list);
+}
+
 function calcBMI(kg,cm){const m=(+cm)/100;return m>0?(+kg)/(m*m):0;}
 function bmiCategory(b){
   if(b<18.5)return{label:'Underweight',pct:Math.max(3,(b/18.5)*25)};
@@ -4142,7 +4264,7 @@ function renderProfile(){
     return;
   }
   // Signed in — show profile or wizard prompt
-  const p=loadProfile();
+  const p=effProfile();   // weight / body fat = latest body-log values
   if(p){
     root.innerHTML=profileCV(p);
     requestAnimationFrame(()=>{positionGauges(p);drawMuscleRadar();});
@@ -4202,7 +4324,7 @@ function profileCompleteView(){
 let pwState=null, pwStep=0;
 const PW_STEPS=['identity','sex','age','height','weight','bodyfat','review'];
 function profileWizardStart(prefillName){
-  const p=loadProfile();
+  const p=effProfile();
   pwState=p?{...p}:{name:'',sex:'',age:25,heightCm:170,weightKg:70,bodyFat:18,photo:''};
   if(!pwState.name){
     const nm=prefillName||(typeof cloudState!=='undefined'&&cloudState.user&&cloudState.user.name)||'';
@@ -4321,7 +4443,13 @@ function pwNext(){
 function pwBack(){if(pwStep>0){pwStep--;renderWizard();}}
 function pwSave(){
   const s=pwState;
+  const prev=effProfile();   // values in force BEFORE this save (latest body-log entry, else profile)
   saveProfileData({name:(s.name||'').trim(),sex:s.sex,age:s.age,heightCm:s.heightCm,weightKg:s.weightKg,bodyFat:s.bodyFat,photo:s.photo||''});
+  // body log = single source of truth: a changed weight / body fat becomes (or updates) TODAY's entry
+  const wChanged=!prev||+s.weightKg!==+prev.weightKg, bfChanged=!prev||+s.bodyFat!==+prev.bodyFat;
+  if(wChanged||bfChanged){
+    bodyLogUpsertToday({weightKg:wChanged?bodyNum(s.weightKg,500):null,bodyFatPercent:bfChanged?bodyNum(s.bodyFat,75):null});
+  }
   profileWizardClose();renderProfile();showToast('Perfil guardado');
   if(typeof cloudSyncMe==='function')cloudSyncMe();
   if(typeof cloudPushProfile==='function')cloudPushProfile();
@@ -4432,6 +4560,7 @@ function peSave(){
 
 /* ---- CV CARD ---- */
 function profileCV(p){
+  const bl=bodyLogLatest();
   const bmi=calcBMI(p.weightKg,p.heightCm);
   const initials=(p.name||'?').trim().split(/\s+/).map(x=>x[0]).slice(0,2).join('').toUpperCase()||'?';
   const av=p.photo?`style="background-image:url('${p.photo}')"`:'';
@@ -4467,10 +4596,11 @@ function profileCV(p){
     <div class="bio-strip">
       <div class="bio-card"><div class="bio-label">Age</div><div class="bio-val">${p.age}</div><div class="bio-unit">years</div></div>
       <div class="bio-card"><div class="bio-label">Height</div><div class="bio-val">${(p.heightCm/100).toFixed(2)}</div><div class="bio-unit">meters</div></div>
-      <div class="bio-card"><div class="bio-label">Weight</div><div class="bio-val">${p.weightKg}</div><div class="bio-unit">kg</div></div>
+      <div class="bio-card"><div class="bio-label">Weight</div><div class="bio-val">${p.weightKg}</div><div class="bio-unit">kg${bl.weightDate?` · ${fmtBodyDate(bl.weightDate,false)}`:''}</div></div>
       <div class="bio-card"><div class="bio-label">BMI</div><div class="bio-val">${bmi.toFixed(1)}</div><div class="bio-unit">${bmiCategory(bmi).label}</div></div>
       <div class="bio-card"><div class="bio-label">Body Fat</div><div class="bio-val" style="font-size:18px">${p.bodyFat}%</div><div class="bio-unit">${bfCategory(p.bodyFat,p.sex).label}</div></div>
     </div>
+    ${bodyLogSummaryHTML(bl)}
 
     <div class="cv-section"><div class="cv-gauge">
       <div class="cv-gauge-top"><span class="cv-gauge-label">📊 Body Mass Index</span><span class="cv-gauge-val">${bmi.toFixed(1)}</span></div>
@@ -4488,6 +4618,134 @@ function profileCV(p){
     <button class="pf-cta" style="width:100%;margin-top:22px" onclick="profileWizardStart()">✎ Update my data</button>
   </div>`;
 }
+/* ---- BODY LOG screen: list (newest first) + add/edit form, in a modal ---- */
+function bodyLogSummaryHTML(L){
+  const n=loadBodyLog().length;
+  const ms=BODY_M_KEYS.filter(k=>L.measurementsCm[k]!=null).map(k=>`<span class="bl-chip">${BODY_M_LABELS[k]} <b>${L.measurementsCm[k]}</b> cm</span>`).join('');
+  return `<div class="bl-sum">
+    ${ms?`<div class="bl-chips" style="margin-bottom:10px">${ms}</div>`:''}
+    <div class="pf-social" style="margin:0">
+      <button class="pf-social-btn" onclick="bodyLogOpen()">⚖️ Registro corporal <b>${n}</b></button>
+      <button class="pf-social-btn" onclick="bodyLogNew()">＋ Nueva entrada</button>
+    </div>
+  </div>`;
+}
+let blState=null;   // {mode:'list'|'form', editId:string|null}
+function bodyLogOpen(){blState={mode:'list',editId:null};document.getElementById('bodylog-modal').classList.add('show');renderBodyLog();}
+function bodyLogNew(){blState={mode:'form',editId:null};document.getElementById('bodylog-modal').classList.add('show');renderBodyLog();}
+function bodyLogEdit(id){blState={mode:'form',editId:id};renderBodyLog();}
+function bodyLogBackToList(){blState={mode:'list',editId:null};renderBodyLog();}
+function bodyLogClose(){document.getElementById('bodylog-modal').classList.remove('show');blState=null;}
+function renderBodyLog(){
+  const root=document.getElementById('bodylog-modal');if(!root||!blState)return;
+  const head=(title,back)=>`<div class="pw-top">
+      <div class="pw-step-count">${back?`<button class="bl-back" onclick="bodyLogBackToList()">‹</button> `:''}⚖️ ${title}</div>
+      <button class="pw-close" onclick="bodyLogClose()">✕</button>
+    </div>`;
+  if(blState.mode==='form'){
+    const ex=blState.editId?loadBodyLog().find(e=>e.id===blState.editId):null;
+    const e=ex||normBodyEntry({date:todayStr()});
+    const v=x=>x==null?'':x;
+    const num=(id,label,val,unit,max)=>`<div class="bl-field"><label for="${id}">${label}</label><div class="bl-inp"><input id="${id}" class="crew-input" type="number" inputmode="decimal" min="0" max="${max}" step="0.1" value="${v(val)}" placeholder="—"><span>${unit}</span></div></div>`;
+    root.innerHTML=`<div class="pw-card" style="max-width:520px">
+      ${head(ex?'EDITAR ENTRADA':'NUEVA ENTRADA',true)}
+      <div class="pw-body" style="margin-top:16px">
+        <div class="bl-field"><label for="bl-date">Fecha</label><input id="bl-date" class="crew-input" type="date" max="${todayStr()}" value="${esc(e.date)}"></div>
+        <div class="bl-hint">Todo es opcional excepto la fecha: registra solo peso, solo medidas, o lo que tengas.</div>
+        <div class="bl-grid">
+          ${num('bl-weight','Peso',e.weightKg,'kg',500)}
+          ${num('bl-bf','% grasa',e.bodyFatPercent,'%',75)}
+        </div>
+        <div class="bl-field"><label for="bl-method">Método de % grasa</label>
+          <input id="bl-method" class="crew-input" list="bl-methods" maxlength="60" placeholder="ej. báscula bioimpedancia, plicómetro" value="${esc(e.bodyFatMethod||'')}">
+          <datalist id="bl-methods"><option value="báscula bioimpedancia"><option value="plicómetro"><option value="DEXA"><option value="estimación visual"></datalist></div>
+        <div class="bl-sec">Medidas (cm)</div>
+        <div class="bl-grid">${BODY_M_KEYS.map(k=>num('bl-m-'+k,BODY_M_LABELS[k],e.measurementsCm[k],'cm',300)).join('')}</div>
+        <div class="bl-field"><label for="bl-note">Nota</label><textarea id="bl-note" class="crew-input" rows="2" maxlength="300" placeholder="Opcional">${esc(e.note||'')}</textarea></div>
+      </div>
+      <div class="pw-nav">
+        <button class="pw-btn ghost" onclick="bodyLogBackToList()">Cancelar</button>
+        <button class="pw-btn primary" onclick="bodyLogSave()">✓ Guardar</button>
+      </div>
+    </div>`;
+    return;
+  }
+  const list=loadBodyLog();
+  const rows=list.map(e=>{
+    const chips=[];
+    if(e.weightKg!=null)chips.push(`<span class="bl-chip w">⚖️ <b>${e.weightKg}</b> kg</span>`);
+    if(e.bodyFatPercent!=null)chips.push(`<span class="bl-chip">🔬 <b>${e.bodyFatPercent}</b>%${e.bodyFatMethod?` <i>${esc(e.bodyFatMethod)}</i>`:''}</span>`);
+    BODY_M_KEYS.forEach(k=>{if(e.measurementsCm[k]!=null)chips.push(`<span class="bl-chip">${BODY_M_LABELS[k]} <b>${e.measurementsCm[k]}</b> cm</span>`);});
+    return `<div class="bl-row">
+      <div class="bl-row-top"><span class="bl-date">${fmtBodyDate(e.date)}</span>
+        <span class="bl-acts"><button title="Editar" onclick="bodyLogEdit('${e.id}')">✎</button><button class="del" title="Eliminar" onclick="bodyLogDelete('${e.id}')">🗑</button></span></div>
+      <div class="bl-chips">${chips.join('')||'<span class="bl-chip">solo nota</span>'}</div>
+      ${e.note?`<div class="bl-note">${esc(e.note)}</div>`:''}
+    </div>`;
+  }).join('');
+  root.innerHTML=`<div class="pw-card" style="max-width:520px">
+    ${head('REGISTRO CORPORAL',false)}
+    <div class="pw-body" style="margin-top:16px">
+      <button class="rm-btn big" style="width:100%;margin-bottom:14px" onclick="bodyLogNew()">＋ Nueva entrada</button>
+      ${rows||`<div class="rm-empty"><div class="big">⚖️</div>Aún no hay entradas.<br>Registra tu peso o tus medidas para ver tu progreso.</div>`}
+    </div>
+  </div>`;
+}
+/* read a numeric field: '' → null (not measured); junk / ≤0 / over max → error */
+function blField(id,label,max){
+  const raw=(document.getElementById(id).value||'').trim();
+  if(raw==='')return {ok:true,val:null};
+  const n=bodyNum(raw,max);
+  if(n==null){showToast(label+': valor inválido (debe ser mayor que 0 y máx. '+max+')');return {ok:false};}
+  return {ok:true,val:n};
+}
+function bodyLogSave(){
+  const date=(document.getElementById('bl-date').value||'').trim();
+  if(!validYMD(date)){showToast('Elige una fecha válida');return;}
+  if(date>todayStr()){showToast('La fecha no puede ser futura');return;}
+  const w=blField('bl-weight','Peso',500),bf=blField('bl-bf','% grasa',75);
+  if(!w.ok||!bf.ok)return;
+  const ms={};
+  for(const k of BODY_M_KEYS){const r=blField('bl-m-'+k,BODY_M_LABELS[k],300);if(!r.ok)return;ms[k]=r.val;}
+  const method=(document.getElementById('bl-method').value||'').trim()||null;
+  const note=(document.getElementById('bl-note').value||'').trim();
+  if(w.val==null&&bf.val==null&&!note&&BODY_M_KEYS.every(k=>ms[k]==null)){showToast('Agrega al menos un dato');return;}
+  const list=loadBodyLog(), now=new Date().toISOString();
+  const sameDate=list.find(e=>e.date===date&&e.id!==blState.editId);
+  if(blState.editId){
+    const cur=list.find(e=>e.id===blState.editId);if(!cur){bodyLogBackToList();return;}
+    if(sameDate){showToast('Ya hay una entrada en esa fecha — edítala en lugar de duplicarla');return;}
+    // merge onto the stored entry so fields this form doesn't know about survive
+    Object.assign(cur,{date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,
+      measurementsCm:Object.assign({},cur.measurementsCm,ms),note,updatedAt:now});
+    showToast('Entrada actualizada');
+  } else if(sameDate){
+    // same day logged again → update that entry, overwriting only what was filled in
+    if(w.val!=null)sameDate.weightKg=w.val;
+    if(bf.val!=null){sameDate.bodyFatPercent=bf.val;sameDate.bodyFatMethod=method;}
+    BODY_M_KEYS.forEach(k=>{if(ms[k]!=null)sameDate.measurementsCm[k]=ms[k];});
+    if(note)sameDate.note=note;
+    sameDate.updatedAt=now;
+    showToast('Ya había una entrada ese día — la actualicé');
+  } else {
+    list.push(normBodyEntry({id:uid(),date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,measurementsCm:ms,note,createdAt:now,updatedAt:now}));
+    showToast('Entrada guardada');
+  }
+  saveBodyLog(list);
+  bodyLogAfterChange();
+  bodyLogBackToList();
+}
+function bodyLogDelete(id){
+  if(!confirm('¿Eliminar esta entrada del registro corporal?'))return;
+  saveBodyLog(loadBodyLog().filter(e=>e.id!==id));
+  bodyLogAfterChange();renderBodyLog();showToast('Entrada eliminada');
+}
+/* weight/body fat feed BMI, gauges, strength ranks and the leaderboard snapshot */
+function bodyLogAfterChange(){
+  renderProfile();
+  if(typeof cloudSyncMe==='function')cloudSyncMe();
+}
+
 function positionGauges(p){
   const bmi=calcBMI(p.weightKg,p.heightCm);
   const bm=document.getElementById('bmi-marker');if(bm)bm.style.left=Math.max(2,Math.min(98,bmiCategory(bmi).pct))+'%';
@@ -4579,8 +4837,8 @@ function computeMuscleBests(){
   const consider=(key,cand)=>{const c=out[key];if(!c||cand.nivel>c.nivel||(cand.nivel===c.nivel&&cand.cmp>c.cmp))out[key]=cand;};
   // 1) manual PRs
   for(const g of MUSCLE_GROUPS){const b=bestPR(g.key);if(b)consider(g.key,{nivel:b.nivel,rango:b.rango,weightKg:b.weightKg,reps:b.reps,date:b.date,source:'pr',cmp:b.rm});}
-  // 2) logged journal sessions (needs bodyweight from profile)
-  const p=loadProfile();
+  // 2) logged journal sessions (needs bodyweight: latest body-log value)
+  const p=effProfile();
   if(p){
     const focus=localStorage.getItem(aKey(FOCUS_KEY))||'hibrido';
     loadJournal().forEach(sess=>{
@@ -4621,7 +4879,7 @@ function rankMeta(nivel){
 /* ---- PR LOGGER MODAL (one modal, any muscle) ---- */
 let prState=null;
 function prOpen(muscleKey){
-  const p=loadProfile();
+  const p=effProfile();
   if(!p){showToast('Register your profile first — we need your bodyweight');switchTab('profile');return;}
   const g=muscleByKey(muscleKey);if(!g)return;
   const lastFocus=localStorage.getItem(aKey(FOCUS_KEY))||'hibrido';
@@ -4791,7 +5049,7 @@ function cloudWeeklyVolume(){
   return Math.round(v);
 }
 function cloudBuildMyData(){
-  const p=loadProfile()||{};
+  const p=effProfile()||{};
   const bests=computeMuscleBests();
   const muscles={}; let top=null;
   MUSCLE_GROUPS.forEach(g=>{const b=bests[g.key];if(b){muscles[g.key]={nivel:b.nivel,rango:b.rango};if(!top||b.nivel>top.nivel)top={nivel:b.nivel,rango:b.rango,key:g.key};}});
@@ -4887,6 +5145,14 @@ window.addEventListener('cloud-auth',async e=>{
     routines=loadRoutines();
     if(window.Cloud&&window.Cloud.getJournal){
       try{ const cj=await window.Cloud.getJournal(uid); if(cj&&cj.length){localStorage.setItem(aKey(JKEY),JSON.stringify(cj));} }catch(_){}
+    }
+    if(window.Cloud&&window.Cloud.getBodyLog){
+      try{
+        const cb=await window.Cloud.getBodyLog(uid);
+        if(localStorage.getItem(aKey(BLDIRTY)))await cloudPushBodyLog();      // unsynced local edits win
+        else if(Array.isArray(cb))localStorage.setItem(aKey(BLKEY),JSON.stringify(cb));
+        else if(loadBodyLog().length)await cloudPushBodyLog();                 // no cloud doc yet → seed it
+      }catch(_){}                                                              // read failed → keep local, push nothing
     }
     _profileHydrating=false;
     if(loadProfile())cloudSyncMe();
@@ -5739,9 +6005,9 @@ rfRun();
 // allow Enter to send a comment
 document.getElementById('comment-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendComment();});
 // close overlays on backdrop click
-['comments-overlay','routine-modal','doc-modal','profile-wizard','pr-modal','muscle-modal','crew-member-modal','friends-modal','crew-invite-modal','notifs-modal','chats-modal','chat-modal','send-picker-modal','rwpreview-modal'].forEach(id=>{
+['comments-overlay','routine-modal','doc-modal','profile-wizard','pr-modal','muscle-modal','bodylog-modal','crew-member-modal','friends-modal','crew-invite-modal','notifs-modal','chats-modal','chat-modal','send-picker-modal','rwpreview-modal'].forEach(id=>{
   const el=document.getElementById(id);
-  if(el)el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('show');if(id==='profile-wizard')pwState=null;if(id==='pr-modal')prState=null;if(id==='muscle-modal')meExId=null;}});
+  if(el)el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('show');if(id==='profile-wizard')pwState=null;if(id==='pr-modal')prState=null;if(id==='muscle-modal')meExId=null;if(id==='bodylog-modal')blState=null;}});
 });
 
 /* ══════════════════════════════════════
@@ -5830,6 +6096,11 @@ window.Cloud = {
   getRoutines: async (uid)=>{ try{ const s=await getDoc(doc(db,'users',uid,'data','routines')); return s.exists()?JSON.parse(s.data().payload||'[]'):null; }catch(e){return null;} },
   saveJournal: (uid,j)=>setDoc(doc(db,'users',uid,'data','journal'),{payload:JSON.stringify(j),updatedAt:serverTimestamp()}),
   getJournal: async (uid)=>{ try{ const s=await getDoc(doc(db,'users',uid,'data','journal')); return s.exists()?JSON.parse(s.data().payload||'[]'):null; }catch(e){return null;} },
+  /* body log: one owner-only doc (users/{uid}/data/bodyLog) holding the JSON array.
+     getBodyLog THROWS on failure (null = no doc yet) so callers never mistake an
+     error for "empty" and overwrite the cloud copy. */
+  saveBodyLog: (uid,list)=>setDoc(doc(db,'users',uid,'data','bodyLog'),{payload:JSON.stringify(list),updatedAt:serverTimestamp()}),
+  getBodyLog: async (uid)=>{ const s=await getDoc(doc(db,'users',uid,'data','bodyLog')); return s.exists()?JSON.parse(s.data().payload||'[]'):null; },
   createCrew: async (uid,name)=>{
     let code='';
     for(let i=0;i<8;i++){ code=genCode(); const s=await getDoc(doc(db,'crews',code)); if(!s.exists()) break; }
