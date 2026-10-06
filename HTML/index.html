@@ -1861,7 +1861,7 @@ function renderRM(){
     routines:viewRoutines, workouts:viewWorkouts, workout:viewWorkout,
     'j-routines':viewJournalRoutines, 'j-workouts':viewJournalWorkouts,
     'j-sessions':viewJournalSessions, 'j-session':viewJournalSession,
-    docs:viewDocs, aigen:viewAIGen, data:viewData
+    docs:viewDocs, aigen:viewAIGen, data:viewData, inspect:viewInspect
   };
   root.innerHTML=(views[rmView]||viewRoutines)();
 }
@@ -3526,6 +3526,8 @@ function viewData(){
     <div class="rm-toolbar">
       <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
       <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
+      <div class="spacer"></div>
+      <button class="rm-btn ghost" onclick="rmGoInspect()">🔍 Modo inspección</button>
     </div>
     <div class="rm-grid">${cards}</div>`;
 }
@@ -3566,6 +3568,61 @@ async function dataWipe(){
   if(typeof rfSync==='function')rfSync();
   showToast(c.label+': borrado');
 }
+
+/* ══════════════════════════════════════
+   INSPECTION MODE (temporary) — read-only check that everything is being saved.
+   To remove: delete this block, the `inspect:viewInspect` entry in renderRM()
+   and the «Modo inspección» button in viewData().
+══════════════════════════════════════ */
+function rmGoInspect(){rmView='inspect';renderRM();}
+function viewInspect(){
+  const J=loadJournal(),BL=loadBodyLog(),sync=lastSynced(),t=iso=>iso?fmtDate(iso,true):'—',
+    tc=iso=>{if(!iso)return '—';const d=new Date(iso);return ymdOf(d)+' '+pad2(d.getHours())+':'+pad2(d.getMinutes());};
+  const maxTs=arr=>arr.map(x=>String(x||'')).filter(Boolean).sort().pop()||null;
+  const sets=[];J.forEach(s=>(s.exercises||[]).forEach(x=>(x.sets||[]).forEach(st=>sets.push({at:st.at||s.dateISO,ex:x.name,unit:unitLabel(x.unit),a:st.actual||{}}))));
+  sets.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+  const ts=e=>e.updatedAt||e.createdAt||(e.date?e.date+'T00:00:00':null);
+  const wt=BL.filter(e=>e.weightKg!=null),bf=BL.filter(e=>e.bodyFatPercent!=null),ms=BL.filter(e=>BODY_M_KEYS.some(k=>e.measurementsCm[k]!=null));
+  const goals=listLive('goals').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const notes=listLive('notes').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const rh=listLive('routineHistory').sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const ph=listLive('profileHistory').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const exG=Object.entries(loadGoals());
+  const cats=[
+    {ico:'📓',name:'Sesiones',n:J.length,doc:'journal',local:maxTs(J.map(e=>e.dateISO)),
+      rows:J.slice(0,5).map(e=>[tc(e.dateISO),`${esc(e.routineName)} · ${esc(e.workoutName)} · ${(e.exercises||[]).reduce((a,x)=>a+(x.sets||[]).length,0)} series`])},
+    {ico:'🏋️',name:'Series',n:sets.length,doc:'journal',local:sets[0]&&sets[0].at,
+      rows:sets.slice(0,5).map(x=>[tc(x.at),`${esc(x.ex)} · ${x.a.weight} ${x.unit} × ${x.a.reps} · RIR ${x.a.rir}`])},
+    {ico:'⚖️',name:'Peso corporal',n:wt.length,doc:'bodyLog',local:maxTs(wt.map(ts)),rows:wt.slice(0,5).map(e=>[e.date,`${e.weightKg} kg${e.revisions?` · ${e.revisions.length} corrección(es)`:''}`])},
+    {ico:'🔬',name:'% de grasa',n:bf.length,doc:'bodyLog',local:maxTs(bf.map(ts)),rows:bf.slice(0,5).map(e=>[e.date,`${e.bodyFatPercent}%${e.bodyFatMethod?' · '+esc(e.bodyFatMethod):''}`])},
+    {ico:'📏',name:'Medidas',n:ms.length,doc:'bodyLog',local:maxTs(ms.map(ts)),
+      rows:ms.slice(0,5).map(e=>[e.date,BODY_M_KEYS.filter(k=>e.measurementsCm[k]!=null).map(k=>`${BODY_M_LABELS[k]} ${e.measurementsCm[k]}`).join(' · ')])},
+    {ico:'🎯',name:'Objetivos',n:goals.length,doc:'goals',local:maxTs(goals.map(g=>g.updatedAt)),
+      rows:goals.slice(0,5).map(g=>[g.startDate,`${g.endDate?'✓ ':'● '}${g.phase?COACH_LABELS[g.phase]+' · ':''}${esc(g.description)}`])},
+    {ico:'🏁',name:'Metas por ejercicio',n:exG.length,doc:'exerciseGoals',local:null,
+      rows:exG.slice(0,5).map(([k,g])=>[ymdOf(g.startISO),`${esc(k.split('::').pop())} · ${g.startWeight}→${g.targetWeight} · límite ${ymdOf(g.deadlineISO)}`])},
+    {ico:'🩹',name:'Lesiones y notas',n:notes.length,doc:'notes',local:maxTs(notes.map(x=>x.updatedAt)),
+      rows:notes.slice(0,5).map(x=>[x.date,`${x.type==='injury'?'🩹':'📝'} ${esc(x.text.length>60?x.text.slice(0,60)+'…':x.text)}${x.resolvedDate?' · resuelta':''}`])},
+    {ico:'📋',name:'Rutinas',n:routines.length,doc:'routines',local:rh[0]&&rh[0].updatedAt,
+      rows:routines.slice(0,5).map(r=>{const h=rh.find(x=>x.routineId===r.id);return [h?h.date:'—',`${esc(r.name)} · ${(r.workouts||[]).length} workouts${h?' · '+h.action:''}`];})},
+    {ico:'🕓',name:'Cambios de rutina',n:rh.length,doc:'routineHistory',local:rh[0]&&rh[0].updatedAt,rows:rh.slice(0,5).map(h=>[h.date,`${h.action} · ${esc(h.name||'')}${h.trimmed?' · (resumido)':''}`])},
+    {ico:'👤',name:'Versiones del perfil',n:ph.length,doc:'profileHistory',local:ph[0]&&ph[0].createdAt,rows:ph.slice(0,5).map(h=>[tc(h.createdAt),h.source==='coach'?'Perfil del coach':'Perfil de atleta'])}
+  ];
+  const cards=cats.map(c=>`<div class="jr-card">
+      <div class="jr-head" style="margin-bottom:8px"><div><div class="jr-title">${c.ico} ${c.name}</div>
+        <div class="jr-sub">Dispositivo: ${t(c.local)} · Nube: ${t(sync[c.doc])}</div></div>
+        <div class="jr-stats"><div class="jr-stat"><div class="jr-stat-val">${c.n}</div><div class="jr-stat-lbl">registros</div></div></div></div>
+      ${c.rows.length?c.rows.map(r=>`<div class="jr-set-line" style="grid-template-columns:118px 1fr"><span>${esc(r[0]||'—')}</span><span>${r[1]}</span></div>`).join(''):'<div class="bl-hint" style="margin:0">Sin registros.</div>'}
+    </div>`).join('');
+  return `
+    <div class="rm-crumb">LIBRARY / DATOS / INSPECCIÓN</div>
+    <button class="rm-back" onclick="rmGoData()">‹ Datos</button>
+    <div class="rm-title">Modo inspección 🔍</div>
+    <div class="rm-subtitle">Conteo y últimos 5 registros de cada tipo. «Nube» es la última vez que se guardó correctamente en tu cuenta.</div>
+    <div class="rm-toolbar"><button class="rm-btn ghost" onclick="renderRM()">↻ Actualizar</button></div>
+    ${cards}`;
+}
+/* ══════════ end INSPECTION MODE ══════════ */
 
 function triggerImport(){document.getElementById('import-file').click();}
 function importFromFile(file){
@@ -3885,7 +3942,7 @@ function cloudPushExGoals(){
   if(!(window.Cloud&&window.Cloud.setData&&cloudState.user))return Promise.resolve();
   const dk=aKey(RGDIRTY);
   return window.Cloud.setData(cloudState.user.uid,'exerciseGoals',loadGoals())
-    .then(()=>{localStorage.removeItem(dk);})
+    .then(()=>{localStorage.removeItem(dk);markSynced('exerciseGoals');})
     .catch(e=>{console.warn('[ExGoals] sync failed',e);});
 }
 function rfKey(rName,wName,exName){return rName+'::'+wName+'::'+exName;}
@@ -4488,7 +4545,7 @@ function cloudPushBodyLog(){
   if(!(window.Cloud&&window.Cloud.saveBodyLog&&cloudState.user))return Promise.resolve();
   const dirtyKey=aKey(BLDIRTY);
   return window.Cloud.saveBodyLog(cloudState.user.uid,loadBodyLog())
-    .then(()=>{localStorage.removeItem(dirtyKey);})
+    .then(()=>{localStorage.removeItem(dirtyKey);markSynced('bodyLog');})
     .catch(e=>{console.warn('[BodyLog] sync failed',e);showToast('Registro corporal guardado en este dispositivo · pendiente de sincronizar');});
 }
 /* latest known value of each field (an entry may hold only some fields) */
@@ -5228,6 +5285,7 @@ async function coachSave(){
   const btn=document.getElementById('cp-save');if(btn){btn.disabled=true;btn.textContent='Guardando…';}
   try{
     await window.Cloud.saveCoachProfile(cloudState.user.uid,data);
+    markSynced('coachProfile');
   }catch(e){
     console.warn('[Coach] save failed',e);
     showToast('No se pudo guardar en la nube — revisa tu conexión');
@@ -5270,6 +5328,9 @@ function mergeById(a,b){
   a.concat(b).forEach(x=>{if(!x||!x.id)return;const o=m.get(x.id);if(!o||ts(x)>ts(o))m.set(x.id,x);});
   return [...m.values()];
 }
+const LASTSYNC_KEY='gymAI_lastsync_v1';
+function lastSynced(){try{return JSON.parse(localStorage.getItem(aKey(LASTSYNC_KEY))||'{}')||{};}catch(e){return {};}}
+function markSynced(name){const m=lastSynced();m[name]=new Date().toISOString();localStorage.setItem(aKey(LASTSYNC_KEY),JSON.stringify(m));}
 const _syncTimers={};
 function scheduleSync(name,ms){clearTimeout(_syncTimers[name]);_syncTimers[name]=setTimeout(()=>{syncList(name);},ms==null?1200:ms);}
 async function syncList(name){
@@ -5286,8 +5347,9 @@ async function syncList(name){
   if(cfg.sort)merged.sort(cfg.sort);
   localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
   if(!cloud||JSON.stringify(cl)!==JSON.stringify(merged)||(cloud.wipedAt||'')!==wiped){
-    try{await window.Cloud.setData(uidAt,name,merged,wiped||null);}catch(e){console.warn('[Sync] write failed',name,e);}
+    try{await window.Cloud.setData(uidAt,name,merged,wiped||null);}catch(e){console.warn('[Sync] write failed',name,e);return;}
   }
+  markSynced(name);
 }
 
 /* ---- dated versions of the athlete profile and the coach profile ---- */
@@ -5781,7 +5843,7 @@ function cloudSyncMe(){
 /* back up the full profile to the account (portable across devices) */
 function cloudPushProfile(){
   if(window.Cloud&&window.Cloud.saveProfile&&cloudState.user){
-    const p=loadProfile(); if(p) try{ window.Cloud.saveProfile(cloudState.user.uid,p).catch(()=>{}); }catch(e){}
+    const p=loadProfile(); if(p) try{ window.Cloud.saveProfile(cloudState.user.uid,p).then(()=>markSynced('profile')).catch(()=>{}); }catch(e){}
   }
 }
 /* back up muscle PRs to the account */
@@ -5792,7 +5854,7 @@ function cloudPushMusclePRs(){
 }
 function cloudPushRoutines(){
   if(window.Cloud&&window.Cloud.saveRoutines&&cloudState.user){
-    try{ window.Cloud.saveRoutines(cloudState.user.uid,routines).catch(()=>{}); }catch(e){}
+    try{ window.Cloud.saveRoutines(cloudState.user.uid,routines).then(()=>markSynced('routines')).catch(()=>{}); }catch(e){}
   }
 }
 function cloudPushJournal(){if(cloudState.user)scheduleSync('journal',300);}
