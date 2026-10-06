@@ -1861,7 +1861,7 @@ function renderRM(){
     routines:viewRoutines, workouts:viewWorkouts, workout:viewWorkout,
     'j-routines':viewJournalRoutines, 'j-workouts':viewJournalWorkouts,
     'j-sessions':viewJournalSessions, 'j-session':viewJournalSession,
-    docs:viewDocs, aigen:viewAIGen
+    docs:viewDocs, aigen:viewAIGen, data:viewData
   };
   root.innerHTML=(views[rmView]||viewRoutines)();
 }
@@ -1898,6 +1898,7 @@ function viewRoutines(){
       <div class="spacer"></div>
       <button class="rm-btn ghost" onclick="triggerImport()">⤒ Import Routine</button>
       <button class="rm-btn ghost" onclick="rmGoJournal()">📓 War Journal</button>
+      <button class="rm-btn ghost" onclick="rmGoData()">🗄 Datos</button>
     </div>
     <div class="rm-grid">${cards}</div>`;
 }
@@ -3475,6 +3476,97 @@ function exportCoachReport(){
   downloadFile('gymai-coach-report-'+todayStr()+'.json',JSON.stringify(r,null,1));
   showToast('Informe para el coach descargado');
 }
+/* ══════════════════════════════════════
+   DATOS — clear test data by category (this account only: device + cloud).
+   Shows counts, offers a JSON backup and requires typing BORRAR.
+   Routines are only removed by their own separate option.
+══════════════════════════════════════ */
+function wipeList(name){listMarkWiped(name);localStorage.setItem(aKey(SYNC_LISTS[name].key),'[]');return syncList(name);}
+const DATA_PARTS={
+  journal:{label:'sesiones',count:()=>loadJournal().length,get:()=>loadJournal(),wipe:()=>wipeList('journal')},
+  bodyLog:{label:'registros de peso, % grasa y medidas',count:()=>loadBodyLog().length,get:()=>loadBodyLog(),wipe:()=>saveBodyLog([])},
+  goals:{label:'objetivos',count:()=>listLive('goals').length,get:()=>listLoad('goals'),wipe:()=>wipeList('goals')},
+  notes:{label:'lesiones y notas',count:()=>listLive('notes').length,get:()=>listLoad('notes'),wipe:()=>wipeList('notes')},
+  exerciseGoals:{label:'metas por ejercicio',count:()=>Object.keys(loadGoals()).length,get:()=>loadGoals(),
+    wipe:()=>{localStorage.setItem(aKey(RGKEY),'{}');localStorage.setItem(aKey(RGDIRTY),'1');return cloudPushExGoals();}},
+  musclePRs:{label:'PRs por músculo',count:()=>Object.values(loadMPRs()).reduce((a,v)=>a+(Array.isArray(v)?v.length:0),0),get:()=>loadMPRs(),
+    wipe:async()=>{saveMPRs({});if(window.Cloud&&window.Cloud.saveMusclePRs)await window.Cloud.saveMusclePRs(cloudState.user.uid,{});}},
+  profileHistory:{label:'versiones guardadas del perfil',count:()=>listLive('profileHistory').length,get:()=>listLoad('profileHistory'),wipe:()=>wipeList('profileHistory')},
+  routineHistory:{label:'cambios de rutina registrados',count:()=>listLive('routineHistory').length,get:()=>listLoad('routineHistory'),wipe:()=>wipeList('routineHistory')},
+  routines:{label:'rutinas',count:()=>routines.length,get:()=>routines,wipe:()=>{routines=[];saveRoutines();}}
+};
+const DATA_CATS={
+  sessions:{ico:'📓',label:'Sesiones',desc:'Todo el War Journal: sesiones, series, pesos y RIR.',parts:['journal'],keep:'rutinas, cuerpo, objetivos y notas'},
+  body:{ico:'⚖️',label:'Peso corporal y medidas',desc:'Peso, % de grasa y medidas de tu registro corporal.',parts:['bodyLog'],keep:'todo lo demás'},
+  goalsNotes:{ico:'🎯',label:'Objetivos y notas',desc:'Objetivos con fechas, lesiones/notas y metas por ejercicio.',parts:['goals','notes','exerciseGoals'],keep:'todo lo demás'},
+  allButRoutines:{ico:'🧹',label:'Todo menos mis rutinas',desc:'Sesiones, cuerpo, objetivos, notas, metas, PRs por músculo e historiales.',
+    parts:['journal','bodyLog','goals','notes','exerciseGoals','musclePRs','profileHistory','routineHistory'],keep:'tus rutinas, tu perfil y tu perfil del coach'},
+  routines:{ico:'📋',label:'Mis rutinas',desc:'Solo tus rutinas. Después se cargan las rutinas de ejemplo.',parts:['routines'],keep:'todo lo demás',danger:true}
+};
+let dataCat=null;
+function rmGoData(){dataCat=null;rmView='data';renderRM();}
+function dataPick(k){dataCat=k;renderRM();}
+function viewData(){
+  if(dataCat&&DATA_CATS[dataCat])return viewDataConfirm();
+  const cards=Object.entries(DATA_CATS).map(([k,c])=>{
+    const tags=c.parts.map(p=>`<span class="rm-tag">${DATA_PARTS[p].count()} ${DATA_PARTS[p].label}</span>`).join('');
+    return `<div class="rm-card">
+      <div class="rm-card-icon">${c.ico}</div>
+      <div class="rm-card-title">${c.label}</div>
+      <div class="rm-card-sub">${c.desc}</div>
+      <div class="rm-card-tags">${tags}</div>
+      <div class="rm-card-actions"><button class="${c.danger?'del':'open'}" onclick="dataPick('${k}')">Borrar…</button></div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="rm-crumb">LIBRARY / DATOS</div>
+    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
+    <div class="rm-title">Datos 🗄</div>
+    <div class="rm-subtitle">Limpia tus datos de prueba. Solo afecta a tu cuenta (este dispositivo y tu nube). Tus rutinas no se tocan salvo que elijas «Mis rutinas».</div>
+    <div class="rm-toolbar">
+      <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
+      <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
+    </div>
+    <div class="rm-grid">${cards}</div>`;
+}
+function viewDataConfirm(){
+  const c=DATA_CATS[dataCat],rows=c.parts.map(p=>({p,n:DATA_PARTS[p].count()})),total=rows.reduce((a,r)=>a+r.n,0);
+  return `
+    <div class="rm-crumb">LIBRARY / DATOS / BORRAR</div>
+    <button class="rm-back" onclick="dataPick(null)">‹ Datos</button>
+    <div class="rm-title">${c.ico} Borrar: ${c.label}</div>
+    <div class="rm-subtitle">Se borra en este dispositivo y en tu nube. No se puede deshacer.</div>
+    <div class="jr-card" style="max-width:560px">
+      <div class="bl-sec" style="margin-top:0">Se borrarán ${total} registro${total!==1?'s':''}</div>
+      <div class="bl-chips" style="margin-bottom:12px">${rows.map(r=>`<span class="bl-chip"><b>${r.n}</b> ${DATA_PARTS[r.p].label}</span>`).join('')}</div>
+      <div class="bl-hint">Se conservan: ${c.keep}.</div>
+      <button class="rm-btn ghost" style="width:100%;margin:6px 0 16px" onclick="dataBackup('${dataCat}')">⤓ Descargar respaldo JSON antes de borrar</button>
+      <div class="bl-field"><label for="data-confirm">Escribe BORRAR para confirmar</label>
+        <input id="data-confirm" class="crew-input" autocomplete="off" autocapitalize="characters" placeholder="BORRAR" oninput="document.getElementById('data-go').disabled=this.value.trim()!=='BORRAR'"></div>
+      <button id="data-go" class="rm-btn danger" style="width:100%;margin-top:8px" disabled onclick="dataWipe()">🗑 Borrar definitivamente</button>
+    </div>`;
+}
+function dataBackup(cat){
+  const parts=cat==='all'?Object.keys(DATA_PARTS):DATA_CATS[cat].parts,data={};
+  parts.forEach(p=>{data[p]=DATA_PARTS[p].get();});
+  if(cat==='all'){data.profile=loadProfile();data.coachProfile=coachState.status==='ready'?coachState.data:null;}
+  downloadFile('gymai-respaldo-'+cat+'-'+todayStr()+'.json',JSON.stringify({app:'GymAI',type:'dataBackup',category:cat,createdAt:new Date().toISOString(),data},null,1));
+  showToast('Respaldo descargado');
+}
+async function dataWipe(){
+  const inp=document.getElementById('data-confirm');
+  if(!inp||inp.value.trim()!=='BORRAR'){showToast('Escribe BORRAR para confirmar');return;}
+  if(!cloudState.user||!DATA_CATS[dataCat])return;
+  const c=DATA_CATS[dataCat],uidAt=cloudState.user.uid,btn=document.getElementById('data-go');
+  btn.disabled=true;btn.textContent='Borrando…';
+  for(const p of c.parts){try{await DATA_PARTS[p].wipe();}catch(e){console.warn('[Data] wipe failed',p,e);}}
+  if(!cloudState.user||cloudState.user.uid!==uidAt)return;
+  dataCat=null;renderRM();renderProfile();
+  if(typeof cloudSyncMe==='function')cloudSyncMe();
+  if(typeof rfSync==='function')rfSync();
+  showToast(c.label+': borrado');
+}
+
 function triggerImport(){document.getElementById('import-file').click();}
 function importFromFile(file){
   if(!file)return;
@@ -5752,7 +5844,7 @@ window.addEventListener('cloud-auth',async e=>{
       try{ const cr=await window.Cloud.getRoutines(uid); if(cr&&cr.length){localStorage.setItem(aKey(RKEY),JSON.stringify(cr));} }catch(_){}
     }
     routines=loadRoutines();
-    if(!localStorage.getItem(aKey(RKEY)))localStorage.setItem(aKey(RKEY),JSON.stringify(routines));   // keep seeded ids stable across reloads
+    {const rr=localStorage.getItem(aKey(RKEY));if(!rr||rr==='[]')localStorage.setItem(aKey(RKEY),JSON.stringify(routines));}   // keep seeded ids stable across reloads
     // sessions + append-only histories: device and cloud copies are merged, never replaced
     for(const name of Object.keys(SYNC_LISTS))await syncList(name);
     if(window.Cloud&&window.Cloud.getData){
