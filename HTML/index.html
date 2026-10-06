@@ -2570,7 +2570,7 @@ function viewJournalRoutines(){
     <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
     <div class="rm-title">War Journal 📓</div>
     <div class="rm-subtitle">Organized by routine ▸ workout ▸ session.</div>
-    ${names.length?`<div class="rm-toolbar"><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
+    ${names.length?`<div class="rm-toolbar"><select id="sj-period" class="rm-btn ghost" onchange="sjPeriodChanged()"><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="12">Últimas 12 semanas</option><option value="all">Todo el historial</option><option value="custom">Rango personalizado…</option></select><span id="sj-custom" style="display:none;gap:.4rem;align-items:center"><input type="date" id="sj-from" class="rm-btn ghost"><input type="date" id="sj-to" class="rm-btn ghost"></span><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
     ${body}`;
 }
 
@@ -3315,16 +3315,18 @@ function exportSessionObj(e){
       sets:(ex.sets||[]).map(st=>({set:st.setNum,target:st.target,actual:st.actual}))}))};
 }
 function activeRoutineName(){const j=loadJournal();return j.length?j[0].routineName:null;}
-function buildJournalExport(sessions,full){
+function buildJournalExport(sessions,full,period){
   const j=loadJournal();
   const out={app:'GymAI',version:2,type:full?'superJournal':'journal',exportedAt:new Date().toISOString(),
     athlete:coachProfileFull(),
-    bodyLog:full?loadBodyLog():loadBodyLog().slice(0,1),
+    bodyLog:full?loadBodyLog().filter(b=>!period||(b.date>=period.from&&b.date<=period.to)):loadBodyLog().slice(0,1),
     activeRoutine:activeRoutineName(),
     sessions:sessions.map(exportSessionObj)};
   if(full){
     out.routines=routines;
-    out.totals={sessions:j.length,firstSession:j.length?j[j.length-1].dateISO:null,lastSession:j.length?j[0].dateISO:null};
+    out.period=period?{from:period.from,to:period.to}:null;
+    const ss=sessions.slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));
+    out.totals={sessions:ss.length,firstSession:ss.length?ss[0].dateISO:null,lastSession:ss.length?ss[ss.length-1].dateISO:null};
   }
   return {journalExport:out};
 }
@@ -3333,10 +3335,28 @@ function exportSession(id){
   downloadFile('gymai-journal-'+safeName(e.workoutName)+'-'+String(e.dateISO).slice(0,10)+'.json',JSON.stringify(buildJournalExport([e],false),null,2));
   showToast('Sesión exportada para el coach');
 }
+function sjPeriod(){
+  const v=(document.getElementById('sj-period')||{}).value||'all';
+  if(v==='all')return null;
+  const to=todayStr();
+  if(v==='custom'){
+    const f=(document.getElementById('sj-from')||{}).value,t=(document.getElementById('sj-to')||{}).value;
+    if(!f||!t||f>t){showToast('Elige un rango de fechas válido');return false;}
+    return {from:f,to:t};
+  }
+  const d=new Date();d.setDate(d.getDate()-7*parseInt(v,10));
+  return {from:d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()),to};
+}
+function sjPeriodChanged(){
+  const c=document.getElementById('sj-custom');
+  if(c)c.style.display=document.getElementById('sj-period').value==='custom'?'flex':'none';
+}
 function exportSuperJournal(){
-  const j=loadJournal();
-  if(!j.length){showToast('Aún no hay sesiones para exportar');return;}
-  downloadFile('gymai-super-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(buildJournalExport(j.slice().reverse(),true),null,2));
+  const period=sjPeriod();if(period===false)return;
+  let j=loadJournal();
+  if(period)j=j.filter(e=>{const d=String(e.dateISO).slice(0,10);return d>=period.from&&d<=period.to;});
+  if(!j.length){showToast('No hay sesiones en ese periodo');return;}
+  downloadFile('gymai-super-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(buildJournalExport(j.slice().reverse(),true,period),null,2));
   showToast('Super Journal exportado · '+j.length+' sesiones');
 }
 function triggerImport(){document.getElementById('import-file').click();}
