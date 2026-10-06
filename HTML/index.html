@@ -1188,6 +1188,164 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
 .toggle-mini::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .25s}
 .toggle-mini.on::after{transform:translateX(16px)}
 @media (max-width:480px){.emoji-grid{grid-template-columns:repeat(6,1fr)}}
+
+/* ══════════════════════════════════════════════════════════════════
+   MIDNIGHT DESIGN LAYER (DESIGN.md) — overrides the component styles above.
+   Flat midnight canvas, neomorphic inset-lit surfaces (no drop shadows),
+   signal blue as the single filled action, candy tags, light body type
+   with Space Grotesk display headings.
+══════════════════════════════════════════════════════════════════ */
+html,body{font-weight:var(--fw-body);font-variant-numeric:tabular-nums;letter-spacing:-0.006em}
+b,strong{font-weight:var(--fw-strong)}
+::selection{background:var(--blue);color:#fff}
+::-webkit-scrollbar-thumb{background:var(--border2)}
+
+/* ── chrome: sidebar, top bar, bottom nav ── */
+#sidebar{background:var(--card);backdrop-filter:none;-webkit-backdrop-filter:none;border-right:1px solid var(--border)}
+.sb-logo-icon{background:#fff;color:var(--bg);border-radius:12px;box-shadow:none}
+.sb-logo-text{letter-spacing:-0.02em}
+.sb-tag{letter-spacing:.08em}
+.nav-btn{border-radius:var(--r-btn);color:var(--gray)}
+.nav-btn:hover{background:var(--card2);color:#fff}
+.nav-btn.active{background:var(--card2);color:#fff;box-shadow:var(--shadow-glow)}
+.nav-btn.active::before{background:var(--blue)}
+.sb-avatar{background:var(--blue)}
+#topbar{background:rgba(0,8,20,.88);border-bottom:1px solid var(--border)}
+.tb-title{font-family:var(--display);font-weight:var(--fw-display);font-size:19px;text-transform:none;letter-spacing:-0.02em}
+.icon-btn{background:var(--card);border:1px solid var(--border);box-shadow:var(--shadow-card);color:#fff}
+.icon-btn:hover{background:var(--card2)}
+#bottomnav{background:rgba(0,8,20,.94);border-top:1px solid var(--border)}
+.bn-btn{color:var(--gray)}
+.bn-btn.active{color:#fff}
+.bn-btn.active .bn-icon{color:var(--blue)}
+
+/* ── type: eyebrows, page titles, supporting copy ── */
+.section-label{font-weight:var(--fw-label);font-size:12px;letter-spacing:.06em;color:#fff}
+.rm-crumb{font-weight:var(--fw-label);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--gray)}
+.rm-title{font-size:32px;line-height:1.05;letter-spacing:-0.02em;margin-bottom:8px}
+.rm-subtitle{font-size:14px;line-height:1.5;color:var(--white80);max-width:60ch}
+.rm-back{font-weight:var(--fw-mid)}
+.cv-name,.finish-h,.pw-q,.jr-title,.rf-detail-title,.rm-card-title,.ex-title{letter-spacing:-0.02em}
+@media (max-width:560px){.rm-title{font-size:27px}}
+
+/* ── surfaces: deep surface + inset light stack, never a drop shadow ── */
+.card,.post-card,.rm-card,.ex-block,.jr-card,.rf-panel,.rf-rcard,.stat-card,.crew-card,.chart-container,.rl-console,.pr-showcase,
+.ai-result-hero,.ai-day-card,.cv-gauge,.bp-preview,.radar-container,.cm-vs{
+  background:var(--card);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--shadow-card)}
+.lb-row,.cw-row,.rf-exblock,.rf-rec,.rf-goalform,.rf-goalsummary,.bio-card,.finish-stat,.muscle-row,.mr-row,.toggle-row,.rf-chart,.rf-stat{
+  border-radius:var(--r-row);box-shadow:var(--shadow-card)}
+.bio-card,.muscle-row,.mr-row,.toggle-row,.lb-row,.cw-row{background:var(--card);border-color:var(--border)}
+.bl-row,.rf-chart,.rf-stat,.rf-exblock,.ptarget,.rx-simple,.rx-simple-multi,.rx-simple-edit,.rx-adv-set,.bp-preview{background:var(--card2);border-color:var(--border);border-radius:var(--r-row)}
+.set-table{border-radius:var(--r-row);border-color:var(--border)}
+.set-thead{background:var(--card2)}
+.rf-panel{border-color:var(--border)}
+.cv-hero{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--shadow-glow),var(--shadow-card)}
+.cv-hero::after{display:none}
+.cv-avatar,.post-avatar,.pf-empty-badge,.ai-result-badge{background:var(--blue);box-shadow:none}
+.lb-row.me,.cw-row.me{background:var(--card2);border-color:var(--blue)}
+.pf-acct{border-radius:var(--r-row)}
+.wk-card:hover,.wk-card:focus-visible,.ex-block.ex-draggable:hover,.rf-rcard:hover,.mr-row:hover{border-color:var(--blue);box-shadow:var(--shadow-glow),var(--shadow-card);transform:none}
+.rm-card.drag-over,.ex-block.drag-over{border-color:var(--blue)!important;box-shadow:var(--shadow-glow)!important}
+.rank-badge,.bp-rank-emblem,.cv-gauge-marker{box-shadow:none}
+.cv-gauge-marker{border-color:var(--bg)}
+.media-overlay{background:none!important}
+.post-media{background:var(--card2)!important}
+.story-ring{background:var(--blue)}
+.story-ring.viewed{background:var(--border2)}
+.story-avatar{border-color:var(--bg)}
+
+/* ── modals: midnight veil, large-radius inset-lit containers ── */
+.modal-overlay,#pr-modal,#profile-wizard,#player-overlay{background:rgba(0,8,20,.86)}
+#photo-editor{background:rgba(0,8,20,.94)}
+.player-confirm-exit{background:rgba(0,8,20,.8)}
+.gm-modal,.pw-card,.pe-card,.player-card,.pce-card,.ig-panel{background:var(--card);border:1px solid var(--border);border-radius:32px;box-shadow:var(--shadow-card)}
+.pw-close{background:var(--card2);border:1px solid var(--border);border-radius:12px;color:#fff}
+.pw-step-count{font-family:var(--font);font-weight:var(--fw-label);letter-spacing:.08em}
+#toast{background:var(--card2);border:1px solid var(--border2);border-radius:var(--r-row);box-shadow:var(--shadow-card);font-weight:var(--fw-mid)}
+
+/* ── primary action: flat signal blue, no glow, no lift ── */
+.rm-btn,.rm-btn.green,.pw-btn.primary,.gm-save,.crew-btn,.ai-generate,.player-next,.finish-save,.rf-goalsave,.rf-applyall,.pf-cta,
+.ig-send,.ig-rw-btns button.prim,.rf-goalset,.rm-card-actions .open,.ig-msg.mine .ig-bubble-txt{
+  background:var(--blue);border:1px solid var(--blue);color:#fff;box-shadow:none;text-shadow:none}
+.rm-btn,.rm-btn.green,.pw-btn.primary,.gm-save,.crew-btn,.ai-generate,.player-next,.finish-save,.rf-goalsave,.rf-applyall,.pf-cta,.rf-goalset,.rm-card-actions .open{
+  border-radius:var(--r-btn);font-family:var(--font);font-weight:var(--fw-strong);letter-spacing:-0.005em}
+.rm-btn:hover,.rm-btn.green:hover,.pw-btn.primary:hover,.gm-save:hover,.crew-btn:hover,.ai-generate:hover,.player-next:hover,.finish-save:hover,
+.rf-goalsave:hover,.rf-applyall:hover,.pf-cta:hover,.rf-goalset:hover,.rm-card-actions .open:hover{background:#3a7fff;box-shadow:none;transform:none}
+.rf-apply{background:var(--blue)!important;border-color:var(--blue)!important;color:#fff!important}
+.rf-apply:hover{background:#3a7fff!important}
+/* featured action (AI coach): cobalt glow surface instead of a second filled color */
+.ai-coach-btn{background:var(--card3)!important;border:1px solid var(--blue-mid)!important;color:#fff!important;box-shadow:var(--shadow-glow)!important}
+.ai-coach-btn:hover{border-color:var(--blue)!important}
+
+/* ── ghost / secondary: transparent with a white hairline ── */
+.rm-btn.ghost,.pw-btn.ghost,.gm-cancel,.crew-btn.ghost,.rf-goalcancel,.rf-back,.rf-unlock,.pf-social-btn,.player-skip,.player-unit-toggle,
+.rm-card-actions button:not(.open),.rf-rec-actions button:not(.rf-apply),.set-pm button,.icon-del{
+  background:transparent;border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:var(--r-btn);box-shadow:none}
+.rm-btn.ghost:hover,.pw-btn.ghost:hover,.gm-cancel:hover,.crew-btn.ghost:hover,.rf-goalcancel:hover,.rf-back:hover,.rf-unlock:hover,.pf-social-btn:hover,
+.player-skip:hover,.player-unit-toggle:hover,.rm-card-actions button:not(.open):hover,.rf-rec-actions button:not(.rf-apply):hover,.set-pm button:hover{border-color:#fff;background:transparent;color:#fff}
+.pf-social-btn b{color:var(--blue)}
+.pf-social-btn.req{border-color:rgba(255,136,51,.6);background:transparent}
+.rm-btn.danger,.rm-card-actions .del:hover,.icon-del:hover{background:transparent;border-color:rgba(255,68,51,.7);color:var(--red)}
+.rm-btn.danger:hover{background:rgba(255,68,51,.1)}
+.player-unit-toggle.on{background:var(--card3);border-color:var(--blue);color:#fff}
+.pw-btn{border-radius:var(--r-btn)}
+
+/* ── selected states (segments, tabs, pickers) ── */
+.cp-seg button,.cp-musc button,.me-seg button,.rf-wtab,.pw-seg-btn,.rx-lvl-card,.emoji-cell{border-radius:14px}
+.cp-seg button.sel,.cp-musc button.sel,.pw-seg-btn.sel,.rf-wtab.on,.rx-lvl-card.sel,.emoji-cell.sel,.me-seg button.sel.pri{
+  background:var(--blue);border-color:var(--blue);color:#fff;transform:none}
+.pw-seg-btn.sel .pw-seg-lbl,.pw-seg-btn.sel .ai-opt-sub,.rx-lvl-card.sel .rx-lvl-sub{color:#fff}
+.lb-toggle,.crew-tabs{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-btn)}
+.lb-toggle button,.crew-tabs button{border-radius:12px}
+.lb-toggle button.on,.crew-tabs button.on{background:var(--blue);box-shadow:none}
+.ios-toggle::after{box-shadow:none}
+
+/* ── inputs: indigo wells pressed into the surface ── */
+.crew-input,.gm-input,.pw-input,.set-input,.ex-name-input,.unit-select,.rf-select,.rm-title-input,.ai-textarea,.fr-search,.ig-text,.gf-input,
+.rx-note-input,.bp-stepper input,.pactual input{background:var(--card2);border:1px solid var(--border2);border-radius:var(--r-input);color:#fff;box-shadow:var(--shadow-press)}
+.crew-input:focus,.gm-input:focus,.pw-input:focus,.set-input:focus,.ex-name-input:focus,.unit-select:focus,.rf-select:focus,.rm-title-input:focus,
+.ai-textarea:focus,.fr-search:focus,.ig-text:focus,.rx-note-input:focus,.bp-stepper input:focus,.pactual input:focus{border-color:var(--blue);outline:none}
+.bp-stepper button{background:transparent;border:1px solid rgba(255,255,255,.3);border-radius:var(--r-input)}
+.pactual input{font-family:var(--display);font-weight:var(--fw-display)}
+
+/* ── candy tags: saturated fills on midnight, pill-ish, playfully tilted ── */
+.rm-tag,.bl-chip,.cv-chip{border:none;border-radius:var(--r-tag);font-family:var(--font);font-weight:var(--fw-mid);color:#fff;padding:4px 11px}
+.rm-tag{font-size:11px}
+.bl-chip b,.cv-chip b{color:inherit;font-family:var(--display);font-weight:var(--fw-display)}
+.bl-chip i{color:inherit;opacity:.8}
+.rm-tag:nth-child(6n+1),.bl-chip:nth-child(6n+1),.cv-chip:nth-child(6n+1){background:var(--red);color:#fff}
+.rm-tag:nth-child(6n+2),.bl-chip:nth-child(6n+2),.cv-chip:nth-child(6n+2){background:var(--violet);color:#fff}
+.rm-tag:nth-child(6n+3),.bl-chip:nth-child(6n+3),.cv-chip:nth-child(6n+3){background:var(--sky);color:var(--bg)}
+.rm-tag:nth-child(6n+4),.bl-chip:nth-child(6n+4),.cv-chip:nth-child(6n+4){background:var(--pink);color:#fff}
+.rm-tag:nth-child(6n+5),.bl-chip:nth-child(6n+5),.cv-chip:nth-child(6n+5){background:var(--yellow);color:var(--bg)}
+.rm-tag:nth-child(6n),.bl-chip:nth-child(6n),.cv-chip:nth-child(6n){background:var(--green);color:var(--bg)}
+.cv-meta .cv-chip:nth-child(3n+1),.rm-card-tags .rm-tag:nth-child(3n+1),.cv-gauge .bl-chip:nth-child(3n+1),.bl-sum .bl-chip:nth-child(3n+1){transform:rotate(-4deg)}
+.cv-meta .cv-chip:nth-child(3n+2),.rm-card-tags .rm-tag:nth-child(3n+2),.cv-gauge .bl-chip:nth-child(3n+2),.bl-sum .bl-chip:nth-child(3n+2){transform:rotate(3deg)}
+.cv-meta .cv-chip:nth-child(3n),.rm-card-tags .rm-tag:nth-child(3n),.cv-gauge .bl-chip:nth-child(3n),.bl-sum .bl-chip:nth-child(3n){transform:rotate(-2deg)}
+.rm-card-tags,.cv-meta,.bl-sum .bl-chips,.cv-gauge .bl-chips{gap:8px 6px}
+/* semantic badges keep their meaning, in the candy palette */
+.rx-badge,.rx-type,.rec-pill,.rf-goalchip,.ex-musc-chip,.ai-opt-tag,.rf-feat{border-radius:var(--r-tag)}
+.rx-badge.lvl1{background:var(--green);border-color:var(--green);color:var(--bg)}
+.rx-badge.lvl2{background:var(--blue);border-color:var(--blue);color:#fff}
+.rx-badge.lvl3{background:var(--violet);border-color:var(--violet);color:#fff}
+.rx-type.work{background:var(--sky);color:var(--bg)}
+.rx-type.warm{background:var(--yellow);color:var(--bg)}
+.rx-type.back{background:var(--slate);color:#fff}
+.rx-type.amrap{background:var(--red);color:#fff}
+.rx-type.rp{background:var(--violet);color:#fff}
+.rx-type.cluster{background:var(--green);color:var(--bg)}
+.ig-crew-tag{background:var(--orange);color:var(--bg)}
+
+/* ── flat fills instead of decorative gradients ── */
+.player-progbar-fill,.pr-bar-fill,.pw-progress-fill{background:var(--blue)}
+.player-rest-time,.pw-bigval,.pw-bigval-input{background:none;-webkit-text-fill-color:#fff;color:#fff}
+.pw-bigval small{-webkit-text-fill-color:var(--gray)}
+.pw-icon{background:var(--card2);border:1px solid var(--border)}
+.rf-goal-fill.ontrack,.rf-goal-fill.done{background:var(--green)}
+.rf-goal-fill.behind{background:var(--orange)}
+.rm-card .rx-badge{align-self:flex-start}
+.rm-grid{grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+@media (max-width:560px){.rm-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -3522,7 +3680,7 @@ function viewData(){
       <div class="rm-card-title">${c.label}</div>
       <div class="rm-card-sub">${c.desc}</div>
       <div class="rm-card-tags">${tags}</div>
-      <div class="rm-card-actions"><button class="${c.danger?'del':'open'}" onclick="dataPick('${k}')">Borrar…</button></div>
+      <div class="rm-card-actions"><button class="${c.danger?'del':''}" onclick="dataPick('${k}')">Borrar…</button></div>
     </div>`;
   }).join('');
   return `
