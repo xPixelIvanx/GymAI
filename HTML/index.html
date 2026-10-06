@@ -1543,6 +1543,9 @@ textarea.gm-input{resize:vertical;min-height:180px;font-family:var(--mono);font-
 <!-- body log: list + add/edit entry (rendered by JS) -->
 <div id="bodylog-modal" class="modal-overlay"></div>
 
+<!-- goals + injuries/notes history (rendered by JS) -->
+<div id="gn-modal" class="modal-overlay"></div>
+
 <!-- exercise muscle-group editor (rendered by JS) -->
 <div id="muscle-modal" class="modal-overlay"></div>
 
@@ -1795,7 +1798,7 @@ function loadRoutines(){
   if(r&&r.length)return sanitizeRoutines(r);
   return signed?seedRoutines():[];
 }
-function saveRoutines(){localStorage.setItem(aKey(RKEY),JSON.stringify(routines));cloudPushRoutines();}
+function saveRoutines(){localStorage.setItem(aKey(RKEY),JSON.stringify(routines));cloudPushRoutines();routineHistoryTrack();}
 function loadJournal(){
   const j=JSON.parse(localStorage.getItem(aKey(JKEY))||'[]');
   // trim exercise names so history keeps matching the (trimmed) routine names
@@ -2863,7 +2866,7 @@ function rmUpdateDrop(id,si,di,field,val,el){
 }
 function rmClearJournal(){
   if(!confirm('Permanently clear the entire war journal?'))return;
-  saveJournal([]);renderRM();showToast('Journal cleared');
+  listMarkWiped('journal');saveJournal([]);renderRM();showToast('Journal cleared');
 }
 
 /* ══════════════════════════════════════
@@ -2979,7 +2982,7 @@ function playerNext(){
     rir:cleanRir(rirRaw!==''?rirRaw:q.target.rir),  // Simple level has no RIR input → keep target
     weight:cleanWeight(loggedWeight)
   };
-  player.records.push({exId:q.exId,exName:q.exName,unit:q.unit,muscles:q.muscles||[],setNum:q.setNum,target:{...q.target},actual});
+  player.records.push({exId:q.exId,exName:q.exName,unit:q.unit,muscles:q.muscles||[],setNum:q.setNum,target:{...q.target},actual,at:new Date().toISOString()});
   const isLast=player.pos===player.queue.length-1;
   if(isLast){player.phase='finish';renderPlayer();return;}
   // rest before next set
@@ -3100,10 +3103,10 @@ function playerSave(){
   player.records.forEach(rec=>{
     let g=exMap.find(x=>x.exId===rec.exId);
     if(!g){g={exId:rec.exId,name:rec.exName,unit:rec.unit,muscles:rec.muscles||[],sets:[]};exMap.push(g);}
-    g.sets.push({setNum:rec.setNum,target:rec.target,actual:rec.actual});
+    g.sets.push({setNum:rec.setNum,target:rec.target,actual:rec.actual,at:rec.at});
   });
   const entry={
-    id:uid(),dateISO:new Date().toISOString(),
+    id:uid(),dateISO:new Date().toISOString(),startedAt:new Date(player.startTime).toISOString(),
     routineName:player.routineName,workoutName:player.workoutName,
     durationSec:Math.round((Date.now()-player.startTime)/1000),
     totalVolumeKg:player._volKg||0,totalSets:player._sets||player.records.length,
@@ -3670,7 +3673,16 @@ function rfToggleEx(exId){if(rfOpenEx.has(exId))rfOpenEx.delete(exId);else rfOpe
    Stored per account; keyed routineName::workoutName::exerciseName. */
 const RGKEY='gymAI_goals_v1';
 function loadGoals(){try{return trimExKeys(JSON.parse(localStorage.getItem(aKey(RGKEY))||'{}')||{});}catch(e){return {};}}
-function saveGoals(o){localStorage.setItem(aKey(RGKEY),JSON.stringify(o));}
+const RGDIRTY='gymAI_goals_dirty_v1';
+function saveGoals(o){localStorage.setItem(aKey(RGKEY),JSON.stringify(o));localStorage.setItem(aKey(RGDIRTY),'1');cloudPushExGoals();}
+/* users/{uid}/data/exerciseGoals — unsynced local edits win, like the body log */
+function cloudPushExGoals(){
+  if(!(window.Cloud&&window.Cloud.setData&&cloudState.user))return Promise.resolve();
+  const dk=aKey(RGDIRTY);
+  return window.Cloud.setData(cloudState.user.uid,'exerciseGoals',loadGoals())
+    .then(()=>{localStorage.removeItem(dk);})
+    .catch(e=>{console.warn('[ExGoals] sync failed',e);});
+}
 function rfKey(rName,wName,exName){return rName+'::'+wName+'::'+exName;}
 function goalWeeks(g){return Math.max(1,Math.round((new Date(g.deadlineISO)-new Date(g.startISO))/(7*864e5)));}
 /* best (heaviest) working weight logged for an exercise, optionally since a
@@ -4211,8 +4223,17 @@ const SEX_META={male:{ico:'♂',label:'Male'},female:{ico:'♀',label:'Female'}}
    • One entry per date: logging the same day again updates that entry.
 ══════════════════════════════════════ */
 const BLKEY='gymAI_bodylog_v1', BLDIRTY='gymAI_bodylog_dirty_v1';
-const BODY_M_KEYS=['waist','chest','arm','thigh'];
-const BODY_M_LABELS={waist:'Cintura',chest:'Pecho',arm:'Brazo',thigh:'Muslo'};
+const BODY_M_KEYS=['waist','chest','arm','thigh','hips','neck'];
+const BODY_M_LABELS={waist:'Cintura',chest:'Pecho',arm:'Brazo',thigh:'Muslo',hips:'Cadera',neck:'Cuello'};
+/* apply an edit to a stored entry; if anything changed, the previous values
+   are appended to entry.revisions (an entry is never silently overwritten) */
+function bodyRevise(e,mutate){
+  const pick=x=>({date:x.date,weightKg:x.weightKg,bodyFatPercent:x.bodyFatPercent,bodyFatMethod:x.bodyFatMethod,
+    measurementsCm:Object.assign({},x.measurementsCm),note:x.note});
+  const before=pick(e);mutate(e);
+  if(stableStr(before)!==stableStr(pick(e)))
+    e.revisions=(Array.isArray(e.revisions)?e.revisions:[]).concat([Object.assign({replacedAt:new Date().toISOString()},before)]);
+}
 function pad2(n){return String(n).padStart(2,'0');}
 function todayStr(){const d=new Date();return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
 function validYMD(s){
@@ -4289,8 +4310,9 @@ function effProfile(){
 function bodyLogUpsertToday(fields){
   const list=loadBodyLog(),today=todayStr();
   let e=list.find(x=>x.date===today);
-  if(!e){e=normBodyEntry({id:uid(),date:today,createdAt:new Date().toISOString()});list.push(e);}
-  Object.keys(fields).forEach(k=>{if(fields[k]!=null)e[k]=fields[k];});
+  const apply=x=>Object.keys(fields).forEach(k=>{if(fields[k]!=null)x[k]=fields[k];});
+  if(!e){e=normBodyEntry({id:uid(),date:today,createdAt:new Date().toISOString()});list.push(e);apply(e);}
+  else bodyRevise(e,apply);
   e.updatedAt=new Date().toISOString();
   return saveBodyLog(list);
 }
@@ -4507,6 +4529,7 @@ function pwSave(){
   const s=pwState;
   const prev=effProfile();   // values in force BEFORE this save (latest body-log entry, else profile)
   saveProfileData({name:(s.name||'').trim(),sex:s.sex,age:s.age,heightCm:s.heightCm,weightKg:s.weightKg,bodyFat:s.bodyFat,photo:s.photo||''});
+  profileSnapshot('profile');
   // body log = single source of truth: a changed weight / body fat becomes (or updates) TODAY's entry
   const wChanged=!prev||+s.weightKg!==+prev.weightKg, bfChanged=!prev||+s.bodyFat!==+prev.bodyFat;
   if(wChanged||bfChanged){
@@ -4677,6 +4700,8 @@ function profileCV(p){
 
     ${coachSectionHTML()}
 
+    ${goalsNotesSectionHTML()}
+
     ${muscleRanksSection()}
 
     <button class="pf-cta" style="width:100%;margin-top:22px" onclick="profileWizardStart()">✎ Update my data</button>
@@ -4780,15 +4805,17 @@ function bodyLogSave(){
     const cur=list.find(e=>e.id===blState.editId);if(!cur){bodyLogBackToList();return;}
     if(sameDate){showToast('Ya hay una entrada en esa fecha — edítala en lugar de duplicarla');return;}
     // merge onto the stored entry so fields this form doesn't know about survive
-    Object.assign(cur,{date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,
-      measurementsCm:Object.assign({},cur.measurementsCm,ms),note,updatedAt:now});
+    bodyRevise(cur,c=>Object.assign(c,{date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,
+      measurementsCm:Object.assign({},c.measurementsCm,ms),note,updatedAt:now}));
     showToast('Entrada actualizada');
   } else if(sameDate){
     // same day logged again → update that entry, overwriting only what was filled in
-    if(w.val!=null)sameDate.weightKg=w.val;
-    if(bf.val!=null){sameDate.bodyFatPercent=bf.val;sameDate.bodyFatMethod=method;}
-    BODY_M_KEYS.forEach(k=>{if(ms[k]!=null)sameDate.measurementsCm[k]=ms[k];});
-    if(note)sameDate.note=note;
+    bodyRevise(sameDate,x=>{
+      if(w.val!=null)x.weightKg=w.val;
+      if(bf.val!=null){x.bodyFatPercent=bf.val;x.bodyFatMethod=method;}
+      BODY_M_KEYS.forEach(k=>{if(ms[k]!=null)x.measurementsCm[k]=ms[k];});
+      if(note)x.note=note;
+    });
     sameDate.updatedAt=now;
     showToast('Ya había una entrada ese día — la actualicé');
   } else {
@@ -5006,8 +5033,215 @@ async function coachSave(){
   if(p&&(p.sex!==d.sex||+p.age!==age||+p.heightCm!==h)){
     if(SEX_META[d.sex])p.sex=d.sex; if(age!=null)p.age=age; if(h!=null)p.heightCm=h;
     saveProfileData(p);cloudPushProfile();cloudSyncMe();renderFooter();
+    profileSnapshot('profile');
   }
+  profileSnapshot('coach');
   coachClose();renderProfile();showToast('Perfil del coach guardado');
+}
+
+/* ══════════════════════════════════════
+   APPEND-ONLY HISTORY — users/{uid}/data/{name} = {payload, wipedAt, updatedAt}
+   Records are added, never overwritten: each has id + createdAt/updatedAt and
+   a removal is a tombstone (deletedAt). syncList() reads the cloud copy, merges
+   it with the device copy by id (newest updatedAt wins) and writes both, so an
+   offline save is never lost and a failed read never erases the cloud.
+   wipedAt (set by an explicit "clear") drops everything dated before it.
+══════════════════════════════════════ */
+const SYNC_LISTS={
+  journal:{key:JKEY,dateOf:e=>e.dateISO,sort:(a,b)=>String(b.dateISO||'').localeCompare(String(a.dateISO||''))},
+  profileHistory:{key:'gymAI_hist_profile_v1',dateOf:x=>x.createdAt},
+  goals:{key:'gymAI_hist_goals_v1',dateOf:x=>x.createdAt},
+  notes:{key:'gymAI_hist_notes_v1',dateOf:x=>x.createdAt},
+  routineHistory:{key:'gymAI_hist_routines_v1',dateOf:x=>x.createdAt}
+};
+function stableStr(o){return JSON.stringify(o,(k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.keys(v).sort().reduce((r,x)=>(r[x]=v[x],r),{}):v);}
+function listLoad(name){try{const a=JSON.parse(localStorage.getItem(aKey(SYNC_LISTS[name].key))||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
+function listLive(name){return listLoad(name).filter(x=>x&&!x.deletedAt);}
+function listSave(name,list){localStorage.setItem(aKey(SYNC_LISTS[name].key),JSON.stringify(list));scheduleSync(name);}
+function listMarkWiped(name){localStorage.setItem(aKey(SYNC_LISTS[name].key+'_wiped'),new Date().toISOString());}
+function mergeById(a,b){
+  const m=new Map(),ts=x=>String(x.updatedAt||x.createdAt||'');
+  a.concat(b).forEach(x=>{if(!x||!x.id)return;const o=m.get(x.id);if(!o||ts(x)>ts(o))m.set(x.id,x);});
+  return [...m.values()];
+}
+const _syncTimers={};
+function scheduleSync(name,ms){clearTimeout(_syncTimers[name]);_syncTimers[name]=setTimeout(()=>{syncList(name);},ms==null?1200:ms);}
+async function syncList(name){
+  if(!(window.Cloud&&window.Cloud.getData&&cloudState.user))return;
+  const cfg=SYNC_LISTS[name],uidAt=cloudState.user.uid;
+  let cloud;
+  try{cloud=await window.Cloud.getData(uidAt,name);}catch(e){console.warn('[Sync] read failed',name,e);return;}
+  if(!cloudState.user||cloudState.user.uid!==uidAt)return;   // account switched meanwhile
+  const wk=aKey(cfg.key+'_wiped');
+  const wiped=[(cloud&&cloud.wipedAt)||'',localStorage.getItem(wk)||''].sort().pop();
+  const cl=cloud&&Array.isArray(cloud.value)?cloud.value:[];
+  let merged=mergeById(cl,listLoad(name));
+  if(wiped){merged=merged.filter(x=>String(cfg.dateOf(x)||'')>wiped);localStorage.setItem(wk,wiped);}
+  if(cfg.sort)merged.sort(cfg.sort);
+  localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
+  if(!cloud||JSON.stringify(cl)!==JSON.stringify(merged)||(cloud.wipedAt||'')!==wiped){
+    try{await window.Cloud.setData(uidAt,name,merged,wiped||null);}catch(e){console.warn('[Sync] write failed',name,e);}
+  }
+}
+
+/* ---- dated versions of the athlete profile and the coach profile ---- */
+function profileSnapshot(source){
+  let data;
+  if(source==='coach'){if(coachState.status!=='ready')return;data=normCoach(coachState.data);}
+  else{const p=loadProfile();if(!p)return;data=Object.assign({},p);delete data.photo;}
+  const list=listLoad('profileHistory');
+  const last=list.filter(x=>x.source===source&&!x.deletedAt).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).pop();
+  if(last&&stableStr(last.data)===stableStr(data))return;
+  const now=new Date().toISOString();
+  list.push({id:uid(),source,createdAt:now,updatedAt:now,data});
+  listSave('profileHistory',list);
+}
+
+/* ---- routine changes: one snapshot per routine per day it changes ---- */
+function routineHistoryTrack(){
+  let signed=false;try{signed=!!cloudState.user;}catch(e){}
+  if(!signed||!Array.isArray(routines))return;
+  const list=listLoad('routineHistory'),now=new Date().toISOString(),today=todayStr(),first=!list.length,last={};
+  list.forEach(h=>{if(!last[h.routineId]||String(h.createdAt)>String(last[h.routineId].createdAt))last[h.routineId]=h;});
+  let changed=false;
+  const add=(r,action)=>{list.push({id:uid(),routineId:r.id,name:r.name,action,date:today,createdAt:now,updatedAt:now,
+    routine:action==='deleted'?null:JSON.parse(JSON.stringify(r))});changed=true;};
+  routines.forEach(r=>{
+    if(!r||!r.id)return;
+    const h=last[r.id];
+    if(!h||h.action==='deleted'){add(r,first?'snapshot':'created');return;}
+    if(h.routine&&stableStr(h.routine)===stableStr(r))return;
+    if(h.date===today){h.routine=JSON.parse(JSON.stringify(r));h.name=r.name;h.updatedAt=now;changed=true;return;}
+    add(r,'edited');
+  });
+  const ids=new Set(routines.map(r=>r&&r.id));
+  Object.values(last).forEach(h=>{if(!ids.has(h.routineId)&&h.action!=='deleted')add({id:h.routineId,name:h.name},'deleted');});
+  if(!changed)return;
+  routineHistoryTrim(list);
+  listSave('routineHistory',list);
+}
+/* Firestore caps a document at 1 MiB: past ~700 KB the oldest snapshots keep
+   their change record (date, action, name) but drop the full routine body */
+function routineHistoryTrim(list){
+  const MAX=700000;let size=JSON.stringify(list).length;if(size<=MAX)return;
+  const latest={};list.forEach(h=>{if(!latest[h.routineId]||String(h.createdAt)>String(latest[h.routineId].createdAt))latest[h.routineId]=h;});
+  const keep=new Set(Object.values(latest)),now=new Date().toISOString();
+  list.slice().sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).some(h=>{
+    if(keep.has(h)||!h.routine)return false;
+    size-=JSON.stringify(h.routine).length;h.routine=null;h.trimmed=true;h.updatedAt=now;
+    return size<=MAX;
+  });
+}
+
+/* ---- goals (with start / target / end dates) and injuries & notes ---- */
+function goalsActive(){return listLive('goals').filter(g=>!g.endDate);}
+function goalsNotesSectionHTML(){
+  const ga=goalsActive(),notes=listLive('notes'),inj=notes.filter(n=>n.type==='injury'&&!n.resolvedDate);
+  const chips=ga.map(g=>`<span class="bl-chip">🎯 ${g.phase?`<b>${COACH_LABELS[g.phase]}</b> · `:''}${esc(g.description)}</span>`).join('')
+    +inj.map(n=>`<span class="bl-chip">🩹 ${esc(n.text.length>40?n.text.slice(0,40)+'…':n.text)}</span>`).join('');
+  return `<div class="section-label" style="margin-top:22px">Objetivos y notas</div>
+    <div class="cv-section"><div class="cv-gauge">
+      ${chips?`<div class="bl-chips" style="margin-bottom:12px">${chips}</div>`:`<div class="bl-hint" style="margin:0 0 10px">Registra tus objetivos con fechas y tus lesiones o notas: todo queda en tu historial.</div>`}
+      <div class="pf-social" style="margin:0">
+        <button class="pf-social-btn" onclick="gnOpen('goals')">🎯 Objetivos <b>${ga.length}</b></button>
+        <button class="pf-social-btn" onclick="gnOpen('notes')">🩹 Lesiones y notas <b>${notes.length}</b></button>
+      </div>
+    </div></div>`;
+}
+let gnState=null;   // {kind:'goals'|'notes', mode:'list'|'form', + draft fields}
+function gnOpen(kind){gnState={kind,mode:'list'};document.getElementById('gn-modal').classList.add('show');renderGN();}
+function gnClose(){document.getElementById('gn-modal').classList.remove('show');gnState=null;renderProfile();}
+function gnNew(){Object.assign(gnState,{mode:'form',phase:'',type:'injury',desc:'',start:todayStr(),target:'',date:todayStr(),text:''});renderGN();}
+function gnBack(){gnState.mode='list';renderGN();}
+function gnRead(){
+  const v=id=>{const el=document.getElementById(id);return el?el.value:null;};
+  [['gn-desc','desc'],['gn-start','start'],['gn-target','target'],['gn-date','date'],['gn-text','text']].forEach(([id,k])=>{const x=v(id);if(x!=null)gnState[k]=x;});
+}
+function gnPick(field,val){gnRead();gnState[field]=val;renderGN();}
+function gnUpdate(name,id,fn,msg){
+  const list=listLoad(name),x=list.find(i=>i.id===id);if(!x)return;
+  fn(x);x.updatedAt=new Date().toISOString();listSave(name,list);renderGN();if(msg)showToast(msg);
+}
+function gnCloseGoal(id){gnUpdate('goals',id,g=>{g.endDate=todayStr();g.status='done';},'Objetivo cerrado');}
+function gnResolve(id){gnUpdate('notes',id,n=>{n.resolvedDate=todayStr();},'Marcada como resuelta');}
+function gnDelete(name,id){if(!confirm('¿Eliminar este registro?'))return;gnUpdate(name,id,x=>{x.deletedAt=new Date().toISOString();},'Eliminado');}
+function gnSave(){
+  gnRead();
+  const s=gnState,now=new Date().toISOString();
+  if(s.kind==='goals'){
+    const desc=(s.desc||'').trim(),start=s.start||'',target=s.target||'';
+    if(!desc){showToast('Describe el objetivo');return;}
+    if(!validYMD(start)){showToast('Elige una fecha de inicio válida');return;}
+    if(target&&(!validYMD(target)||target<start)){showToast('La fecha objetivo debe ser igual o posterior al inicio');return;}
+    const list=listLoad('goals');
+    // a new phase goal (cutting / bulking…) closes the phase goal in force
+    if(s.phase)list.forEach(g=>{if(!g.deletedAt&&!g.endDate&&g.phase){g.endDate=start>g.startDate?start:g.startDate;g.status='replaced';g.updatedAt=now;}});
+    list.push({id:uid(),phase:s.phase||null,description:desc,startDate:start,targetDate:target||null,endDate:null,status:'active',createdAt:now,updatedAt:now});
+    listSave('goals',list);showToast('Objetivo guardado');
+  } else {
+    const text=(s.text||'').trim(),date=s.date||'';
+    if(!text){showToast('Escribe la nota');return;}
+    if(!validYMD(date)||date>todayStr()){showToast('Elige una fecha válida (no futura)');return;}
+    const list=listLoad('notes');
+    list.push({id:uid(),type:s.type==='note'?'note':'injury',date,text,resolvedDate:null,createdAt:now,updatedAt:now});
+    listSave('notes',list);showToast('Nota guardada');
+  }
+  gnBack();
+}
+function renderGN(){
+  const root=document.getElementById('gn-modal');if(!root||!gnState)return;
+  const s=gnState,isG=s.kind==='goals',title=isG?'🎯 OBJETIVOS':'🩹 LESIONES Y NOTAS';
+  const head=back=>`<div class="pw-top">
+      <div class="pw-step-count">${back?`<button class="bl-back" onclick="gnBack()">‹</button> `:''}${title}</div>
+      <button class="pw-close" onclick="gnClose()">✕</button>
+    </div>`;
+  const seg=(field,opts,cur)=>`<div class="cp-seg">${opts.map(([v,l])=>`<button class="${v===cur?'sel':''}" onclick="gnPick('${field}','${v}')">${l}</button>`).join('')}</div>`;
+  if(s.mode==='form'){
+    const body=isG?`
+        <div class="bl-field"><label>Fase</label>${seg('phase',[['','Sin fase']].concat(COACH_ENUMS.phase.map(p=>[p,COACH_LABELS[p]])),s.phase)}</div>
+        <div class="bl-hint">Una nueva fase cierra automáticamente la fase anterior.</div>
+        <div class="bl-field"><label for="gn-desc">Objetivo</label><input id="gn-desc" class="crew-input" maxlength="200" placeholder="ej. bajar a 12% de grasa, press banca 100 kg" value="${esc(s.desc||'')}"></div>
+        <div class="bl-grid">
+          <div class="bl-field"><label for="gn-start">Inicio</label><input id="gn-start" class="crew-input" type="date" value="${esc(s.start||'')}"></div>
+          <div class="bl-field"><label for="gn-target">Meta (opcional)</label><input id="gn-target" class="crew-input" type="date" value="${esc(s.target||'')}"></div>
+        </div>`:`
+        <div class="bl-field"><label>Tipo</label>${seg('type',[['injury','🩹 Lesión / molestia'],['note','📝 Nota']],s.type)}</div>
+        <div class="bl-field"><label for="gn-date">Fecha</label><input id="gn-date" class="crew-input" type="date" max="${todayStr()}" value="${esc(s.date||'')}"></div>
+        <div class="bl-field"><label for="gn-text">Detalle</label><textarea id="gn-text" class="crew-input" rows="3" maxlength="500" placeholder="ej. molestia en hombro derecho al hacer press militar">${esc(s.text||'')}</textarea></div>`;
+    root.innerHTML=`<div class="pw-card" style="max-width:520px">
+      ${head(true)}
+      <div class="pw-body" style="margin-top:16px">${body}</div>
+      <div class="pw-nav">
+        <button class="pw-btn ghost" onclick="gnBack()">Cancelar</button>
+        <button class="pw-btn primary" onclick="gnSave()">✓ Guardar</button>
+      </div>
+    </div>`;
+    return;
+  }
+  const byNew=(a,b)=>String(b.createdAt).localeCompare(String(a.createdAt));
+  let rows;
+  if(isG){
+    const gs=listLive('goals').sort(byNew),act=gs.filter(g=>!g.endDate),old=gs.filter(g=>g.endDate);
+    const row=g=>`<div class="bl-row"${g.endDate?' style="opacity:.6"':''}>
+      <div class="bl-row-top"><span class="bl-date">${g.phase?COACH_LABELS[g.phase]+' · ':''}${fmtBodyDate(g.startDate,true)}${g.endDate?' → '+fmtBodyDate(g.endDate,true):g.targetDate?' → meta '+fmtBodyDate(g.targetDate,true):''}</span>
+        <span class="bl-acts">${g.endDate?'':`<button title="Cerrar objetivo" onclick="gnCloseGoal('${g.id}')">✓</button>`}<button class="del" title="Eliminar" onclick="gnDelete('goals','${g.id}')">🗑</button></span></div>
+      <div class="bl-note">${esc(g.description)}${g.endDate?` <i>(${g.status==='replaced'?'reemplazado':'cerrado'})</i>`:''}</div>
+    </div>`;
+    rows=act.map(row).join('')+(old.length?`<div class="bl-sec">Historial</div>`+old.map(row).join(''):'');
+  } else {
+    rows=listLive('notes').sort((a,b)=>String(b.date).localeCompare(String(a.date))||byNew(a,b)).map(n=>`<div class="bl-row"${n.resolvedDate?' style="opacity:.6"':''}>
+      <div class="bl-row-top"><span class="bl-date">${n.type==='injury'?'🩹':'📝'} ${fmtBodyDate(n.date,true)}${n.resolvedDate?' · resuelta '+fmtBodyDate(n.resolvedDate,true):''}</span>
+        <span class="bl-acts">${n.type==='injury'&&!n.resolvedDate?`<button title="Marcar resuelta" onclick="gnResolve('${n.id}')">✓</button>`:''}<button class="del" title="Eliminar" onclick="gnDelete('notes','${n.id}')">🗑</button></span></div>
+      <div class="bl-note">${esc(n.text)}</div>
+    </div>`).join('');
+  }
+  root.innerHTML=`<div class="pw-card" style="max-width:520px">
+    ${head(false)}
+    <div class="pw-body" style="margin-top:16px">
+      <button class="rm-btn big" style="width:100%;margin-bottom:14px" onclick="gnNew()">＋ ${isG?'Nuevo objetivo':'Nueva lesión o nota'}</button>
+      ${rows||`<div class="rm-empty"><div class="big">${isG?'🎯':'🩹'}</div>${isG?'Aún no hay objetivos.':'Aún no hay lesiones ni notas.'}</div>`}
+    </div>
+  </div>`;
 }
 
 function positionGauges(p){
@@ -5355,11 +5589,7 @@ function cloudPushRoutines(){
     try{ window.Cloud.saveRoutines(cloudState.user.uid,routines).catch(()=>{}); }catch(e){}
   }
 }
-function cloudPushJournal(){
-  if(window.Cloud&&window.Cloud.saveJournal&&cloudState.user){
-    try{ window.Cloud.saveJournal(cloudState.user.uid,loadJournal()).catch(()=>{}); }catch(e){}
-  }
-}
+function cloudPushJournal(){if(cloudState.user)scheduleSync('journal',300);}
 function cloudSubscribe(){
   if(!window.Cloud||!cloudState.crewId)return;
   window.Cloud.getCrew(cloudState.crewId).then(c=>{cloudState.crewName=c?(c.name||''):'';renderCrew();}).catch(()=>{});
@@ -5408,8 +5638,16 @@ window.addEventListener('cloud-auth',async e=>{
       try{ const cr=await window.Cloud.getRoutines(uid); if(cr&&cr.length){localStorage.setItem(aKey(RKEY),JSON.stringify(cr));} }catch(_){}
     }
     routines=loadRoutines();
-    if(window.Cloud&&window.Cloud.getJournal){
-      try{ const cj=await window.Cloud.getJournal(uid); if(cj&&cj.length){localStorage.setItem(aKey(JKEY),JSON.stringify(cj));} }catch(_){}
+    if(!localStorage.getItem(aKey(RKEY)))localStorage.setItem(aKey(RKEY),JSON.stringify(routines));   // keep seeded ids stable across reloads
+    // sessions + append-only histories: device and cloud copies are merged, never replaced
+    for(const name of Object.keys(SYNC_LISTS))await syncList(name);
+    if(window.Cloud&&window.Cloud.getData){
+      try{
+        const cg=await window.Cloud.getData(uid,'exerciseGoals');
+        if(localStorage.getItem(aKey(RGDIRTY)))await cloudPushExGoals();              // unsynced local edits win
+        else if(cg&&cg.value&&typeof cg.value==='object')localStorage.setItem(aKey(RGKEY),JSON.stringify(cg.value));
+        else if(Object.keys(loadGoals()).length)await cloudPushExGoals();             // no cloud doc yet → seed it
+      }catch(_){}
     }
     if(window.Cloud&&window.Cloud.getBodyLog){
       try{
@@ -5420,9 +5658,10 @@ window.addEventListener('cloud-auth',async e=>{
       }catch(_){}                                                              // read failed → keep local, push nothing
     }
     await coachLoad();
+    profileSnapshot('profile');profileSnapshot('coach');routineHistoryTrack();   // first version of what already exists
     _profileHydrating=false;
     if(loadProfile())cloudSyncMe();
-    cloudPushRoutines(); cloudPushJournal();
+    cloudPushRoutines();
     if(cloudState.crewId)cloudSubscribe();
     cloudSubscribeFriends();
     cloudSubscribeCrewInvites();
@@ -6360,8 +6599,9 @@ window.Cloud = {
   getMusclePRs: async (uid)=>{ const s=await getDoc(doc(db,'users',uid)); return s.exists()?(s.data().musclePRs||null):null; },
   saveRoutines: (uid,r)=>setDoc(doc(db,'users',uid,'data','routines'),{payload:JSON.stringify(r),updatedAt:serverTimestamp()}),
   getRoutines: async (uid)=>{ try{ const s=await getDoc(doc(db,'users',uid,'data','routines')); return s.exists()?JSON.parse(s.data().payload||'[]'):null; }catch(e){return null;} },
-  saveJournal: (uid,j)=>setDoc(doc(db,'users',uid,'data','journal'),{payload:JSON.stringify(j),updatedAt:serverTimestamp()}),
-  getJournal: async (uid)=>{ try{ const s=await getDoc(doc(db,'users',uid,'data','journal')); return s.exists()?JSON.parse(s.data().payload||'[]'):null; }catch(e){return null;} },
+  /* generic users/{uid}/data/{name} = {payload: JSON string, wipedAt, updatedAt}; getData throws on read failure */
+  setData: (uid,name,value,wipedAt)=>setDoc(doc(db,'users',uid,'data',name),{payload:JSON.stringify(value),wipedAt:wipedAt||null,updatedAt:serverTimestamp()}),
+  getData: async (uid,name)=>{ const s=await getDoc(doc(db,'users',uid,'data',name)); if(!s.exists())return null; const d=s.data(); return {value:JSON.parse(d.payload||'null'),wipedAt:d.wipedAt||null}; },
   /* body log: one owner-only doc (users/{uid}/data/bodyLog) holding the JSON array.
      getBodyLog THROWS on failure (null = no doc yet) so callers never mistake an
      error for "empty" and overwrite the cloud copy. */
