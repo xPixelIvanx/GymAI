@@ -2570,7 +2570,7 @@ function viewJournalRoutines(){
     <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
     <div class="rm-title">War Journal 📓</div>
     <div class="rm-subtitle">Organized by routine ▸ workout ▸ session.</div>
-    ${names.length?`<div class="rm-toolbar"><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
+    ${names.length?`<div class="rm-toolbar"><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
     ${body}`;
 }
 
@@ -2608,7 +2608,7 @@ function viewJournalSessions(){
       <div class="rm-card-title">${esc(jWorkout)} — #${num}</div>
       <div class="rm-card-sub">${fmtDate(e.dateISO,true)}</div>
       <div class="rm-card-tags"><span class="rm-tag">${e.totalVolumeKg.toLocaleString()} kg</span><span class="rm-tag">${e.totalSets} sets</span></div>
-      <div class="rm-card-actions"><button class="open" onclick="jOpenSession('${e.id}')">View</button></div>
+      <div class="rm-card-actions"><button class="open" onclick="jOpenSession('${e.id}')">View</button><button class="mini" title="Exportar para el coach" onclick="exportSession('${e.id}')">⤓</button></div>
     </div>`;
   }).join('');
   return `
@@ -2646,6 +2646,7 @@ function viewJournalSession(){
     <button class="rm-back" onclick="jBackSessions()">‹ ${esc(entry.workoutName)} Sessions</button>
     <div class="rm-title">${esc(entry.workoutName)} — #${num}</div>
     <div class="rm-subtitle">${esc(entry.routineName)} · ${fmtDate(entry.dateISO,true)}</div>
+    <div class="rm-toolbar"><button class="rm-btn ghost" onclick="exportSession('${entry.id}')">⤓ Exportar para el coach</button></div>
     <div class="jr-card">
       <div class="jr-head">
         <div><div class="jr-title">Session Summary</div><div class="jr-sub">${fmtDate(entry.dateISO,true)}</div></div>
@@ -3305,6 +3306,38 @@ function exportBackup(){
   const data={app:'GymAI',version:2,type:'backup',exportedAt:new Date().toISOString(),routines,documents:loadDocs(),journal:loadJournal()};
   downloadFile('gymai-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(data,null,2));
   showToast('Backup exported · '+routines.length+' routines');
+}
+/* ── COACH EXPORT: journalExport (one session) & Super Journal (everything) ── */
+function exportSessionObj(e){
+  return {id:e.id,date:e.dateISO,routine:e.routineName,workout:e.workoutName,
+    durationMin:Math.max(1,Math.round((e.durationSec||0)/60)),totalVolumeKg:e.totalVolumeKg||0,totalSets:e.totalSets||0,
+    exercises:(e.exercises||[]).map(ex=>({name:ex.name,unit:ex.unit,muscles:ex.muscles||[],
+      sets:(ex.sets||[]).map(st=>({set:st.setNum,target:st.target,actual:st.actual}))}))};
+}
+function activeRoutineName(){const j=loadJournal();return j.length?j[0].routineName:null;}
+function buildJournalExport(sessions,full){
+  const j=loadJournal();
+  const out={app:'GymAI',version:2,type:full?'superJournal':'journal',exportedAt:new Date().toISOString(),
+    athlete:coachProfileFull(),
+    bodyLog:full?loadBodyLog():loadBodyLog().slice(0,1),
+    activeRoutine:activeRoutineName(),
+    sessions:sessions.map(exportSessionObj)};
+  if(full){
+    out.routines=routines;
+    out.totals={sessions:j.length,firstSession:j.length?j[j.length-1].dateISO:null,lastSession:j.length?j[0].dateISO:null};
+  }
+  return {journalExport:out};
+}
+function exportSession(id){
+  const e=loadJournal().find(x=>x.id===id);if(!e)return;
+  downloadFile('gymai-journal-'+safeName(e.workoutName)+'-'+String(e.dateISO).slice(0,10)+'.json',JSON.stringify(buildJournalExport([e],false),null,2));
+  showToast('Sesión exportada para el coach');
+}
+function exportSuperJournal(){
+  const j=loadJournal();
+  if(!j.length){showToast('Aún no hay sesiones para exportar');return;}
+  downloadFile('gymai-super-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(buildJournalExport(j.slice().reverse(),true),null,2));
+  showToast('Super Journal exportado · '+j.length+' sesiones');
 }
 function triggerImport(){document.getElementById('import-file').click();}
 function importFromFile(file){
