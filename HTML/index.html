@@ -1595,6 +1595,65 @@ function aKey(base){
   return u?base+'::'+u:base+'::__none__';
 }
 
+/* ── DATA HYGIENE ──────────────────────────────────────────────────
+   reps: integer ≥ 0 · RIR: integer 0–10 · weight: ≥ 0 (0 = bodyweight).
+   Exercise names are trimmed; a muscle appears once per exercise
+   (primary wins over secondary). Applied on every write path (editor,
+   session player, import, AI, clone) and to routines/journal on read,
+   so legacy data is cleaned in memory and persisted on the next save.
+   NOTE: runs during early init — must not touch later-declared consts
+   (MUSCLE_GROUPS, RX_SET_TYPES, cloudState…). */
+const RIR_MAX=10;
+function cleanReps(v){const n=parseInt(v);return n>0?n:0;}
+function cleanRir(v){const n=parseInt(v);return n>0?Math.min(RIR_MAX,n):0;}
+function cleanWeight(v){const n=parseFloat(v);return n>0?n:0;}
+function cleanSetNum(field,v){return field==='weight'?cleanWeight(v):(field==='rir'?cleanRir(v):cleanReps(v));}
+function cleanExName(s){return String(s==null?'':s).trim();}
+function dedupeMuscles(ms){
+  if(!Array.isArray(ms))return [];
+  const out=[],at={};
+  ms.forEach(m=>{
+    if(!m||!m.key)return;
+    const role=m.role==='primary'?'primary':'secondary';
+    if(at[m.key]==null){at[m.key]=out.length;out.push({key:m.key,role});}
+    else if(role==='primary')out[at[m.key]].role='primary';
+  });
+  return out;
+}
+function cleanSetInPlace(s){
+  if(!s)return;
+  if('reps' in s)s.reps=cleanReps(s.reps);
+  if('rir' in s)s.rir=cleanRir(s.rir);
+  if('weight' in s)s.weight=cleanWeight(s.weight);
+  if(Array.isArray(s.dropsets))s.dropsets.forEach(d=>{if(d){d.reps=cleanReps(d.reps);d.weight=cleanWeight(d.weight);}});
+}
+function sanitizeExercise(ex){
+  if(!ex)return ex;
+  ex.name=cleanExName(ex.name)||'Exercise';
+  if(Array.isArray(ex.muscles))ex.muscles=dedupeMuscles(ex.muscles);
+  (ex.sets||[]).forEach(cleanSetInPlace);
+  return ex;
+}
+function sanitizeRoutines(rs){
+  (rs||[]).forEach(r=>((r&&r.workouts)||[]).forEach(w=>((w&&w.exercises)||[]).forEach(sanitizeExercise)));
+  return rs;
+}
+/* RF goals / locks / corrections are keyed "routine::workout::exercise" —
+   trim the exercise part so old keys keep matching trimmed names */
+function trimExKeys(o){
+  if(!o||typeof o!=='object')return o;
+  let out=null;
+  Object.keys(o).forEach(k=>{
+    const i=k.lastIndexOf('::');if(i<0)return;
+    const ex=k.slice(i+2),t=ex.trim();if(t===ex)return;
+    out=out||Object.assign({},o);
+    const nk=k.slice(0,i+2)+t;
+    if(!(nk in out))out[nk]=out[k];
+    delete out[k];
+  });
+  return out||o;
+}
+
 function mkSets(specs){return specs.map(s=>({reps:s[0],rir:s[1],weight:s[2]}));}
 function uniform(n,reps,rir,weight){const a=[];for(let i=0;i<n;i++)a.push({reps,rir,weight});return a;}
 
@@ -1700,11 +1759,16 @@ function loadRoutines(){
   let signed=false;
   try{signed=!!(cloudState&&cloudState.user);}catch(e){}
   const r=JSON.parse(localStorage.getItem(aKey(RKEY))||'null');
-  if(r&&r.length)return r;
+  if(r&&r.length)return sanitizeRoutines(r);
   return signed?seedRoutines():[];
 }
 function saveRoutines(){localStorage.setItem(aKey(RKEY),JSON.stringify(routines));cloudPushRoutines();}
-function loadJournal(){return JSON.parse(localStorage.getItem(aKey(JKEY))||'[]');}
+function loadJournal(){
+  const j=JSON.parse(localStorage.getItem(aKey(JKEY))||'[]');
+  // trim exercise names so history keeps matching the (trimmed) routine names
+  j.forEach(e=>((e&&e.exercises)||[]).forEach(x=>{if(x&&typeof x.name==='string')x.name=x.name.trim();}));
+  return j;
+}
 function saveJournal(j){localStorage.setItem(aKey(JKEY),JSON.stringify(j));cloudPushJournal();}
 
 let routines=loadRoutines();
@@ -2102,12 +2166,12 @@ function aiGenSave(){
       id:uid(),name:(d.nombreDia||('Día '+(di+1))).slice(0,40),
       exercises:(d.ejercicios||[]).map(e=>{
         const series=Math.max(1,Math.min(10,aiParseInt(e.series,3)));
-        const reps=aiParseInt(e.reps,10);
-        const rir=aiParseInt(e.rir,2);
+        const reps=cleanReps(aiParseInt(e.reps,10));
+        const rir=cleanRir(aiParseInt(e.rir,2));
         return {
-          id:uid(),name:(e.nombre||'Ejercicio').slice(0,60),
+          id:uid(),name:cleanExName((e.nombre||'Ejercicio').slice(0,60))||'Ejercicio',
           meta:`${e.reps!=null?e.reps:reps} reps${e.rir!=null&&e.rir!==''?' · RIR '+e.rir:''}`,
-          unit:'kg',restSeconds:120,muscles:aiGuessMuscles(e.nombre),
+          unit:'kg',restSeconds:120,muscles:dedupeMuscles(aiGuessMuscles(e.nombre)),
           sets:Array.from({length:series},()=>({reps,rir,weight:0}))
         };
       })
@@ -2191,7 +2255,7 @@ function exerciseBlock(ex,ei){
     head=`<div class="ex-head">
       <span class="drag-handle" draggable="true" title="Drag to reorder" ondragstart="dragStart(event,'exercise','${ex.id}')" ondragend="dragEnd(event)">⠿</span>
       <span class="ex-num">${ei+1}</span>
-      <input class="ex-name-input" value="${esc(ex.name)}" onchange="rmUpdateExercise('${ex.id}','name',this.value)">
+      <input class="ex-name-input" value="${esc(ex.name)}" onchange="rmUpdateExercise('${ex.id}','name',this.value,this)">
       <select class="unit-select" onchange="rmUpdateExercise('${ex.id}','unit',this.value)">
         ${Object.keys(UNITS).map(u=>`<option value="${u}" ${u===ex.unit?'selected':''}>${UNITS[u].toUpperCase()}</option>`).join('')}
       </select>
@@ -2253,9 +2317,9 @@ function exSetsViewL2(ex,ul){
 function exSetsEditL2(ex,ul){
   const rows=ex.sets.map((s,si)=>`<div class="set-trow">
     <div><span class="set-badge">${si+1}</span></div>
-    <div><input type="number" class="set-input" min="1" max="50" value="${s.reps}" onchange="rmUpdateSet('${ex.id}',${si},'reps',this.value)"></div>
-    <div><input type="number" class="set-input" min="0" max="6" value="${s.rir}" onchange="rmUpdateSet('${ex.id}',${si},'rir',this.value)"></div>
-    <div><input type="number" class="set-input" min="0" step="0.5" value="${s.weight}" onchange="rmUpdateSet('${ex.id}',${si},'weight',this.value)"></div>
+    <div><input type="number" class="set-input" min="1" max="50" value="${s.reps}" onchange="rmUpdateSet('${ex.id}',${si},'reps',this.value,this)"></div>
+    <div><input type="number" class="set-input" min="0" max="10" step="1" value="${s.rir}" onchange="rmUpdateSet('${ex.id}',${si},'rir',this.value,this)"></div>
+    <div><input type="number" class="set-input" min="0" step="0.5" value="${s.weight}" onchange="rmUpdateSet('${ex.id}',${si},'weight',this.value,this)"></div>
   </div>`).join('');
   return `<div class="set-table">
     <div class="set-thead"><span>Set</span><span>Target Reps</span><span>Target RIR</span><span>Weight (${ul})</span></div>
@@ -2281,8 +2345,8 @@ function exSetsEditL1(ex,ul){
   const s=ex.sets[0]||{reps:10,weight:20};
   return `<div class="rx-simple-edit">
     <div class="rx-se-field"><label>Series</label><div class="rx-se-count">${ex.sets.length}</div></div>
-    <div class="rx-se-field"><label>Reps</label><input type="number" class="set-input" min="1" max="50" value="${s.reps}" onchange="rmSetUniform('${ex.id}','reps',this.value)"></div>
-    <div class="rx-se-field"><label>Peso (${ul})</label><input type="number" class="set-input" min="0" step="0.5" value="${s.weight}" onchange="rmSetUniform('${ex.id}','weight',this.value)"></div>
+    <div class="rx-se-field"><label>Reps</label><input type="number" class="set-input" min="1" max="50" value="${s.reps}" onchange="rmSetUniform('${ex.id}','reps',this.value,this)"></div>
+    <div class="rx-se-field"><label>Peso (${ul})</label><input type="number" class="set-input" min="0" step="0.5" value="${s.weight}" onchange="rmSetUniform('${ex.id}','weight',this.value,this)"></div>
   </div>`;
 }
 /* Level 3 — Advanced: type, tempo, per-set note, dropsets */
@@ -2313,22 +2377,22 @@ function exSetsEditL3(ex,ul){
     const t=rxSetType(s);
     const drops=(s.dropsets||[]).map((d,di)=>`<div class="rx-drop-row">
       <span class="rx-drop-lbl">drop ${di+1}</span>
-      <input type="number" class="set-input sm" min="1" max="50" value="${d.reps}" onchange="rmUpdateDrop('${ex.id}',${si},${di},'reps',this.value)">
-      <input type="number" class="set-input sm" min="0" step="0.5" value="${d.weight}" onchange="rmUpdateDrop('${ex.id}',${si},${di},'weight',this.value)">
+      <input type="number" class="set-input sm" min="1" max="50" value="${d.reps}" onchange="rmUpdateDrop('${ex.id}',${si},${di},'reps',this.value,this)">
+      <input type="number" class="set-input sm" min="0" step="0.5" value="${d.weight}" onchange="rmUpdateDrop('${ex.id}',${si},${di},'weight',this.value,this)">
       <button class="rx-drop-del" onclick="rmRemoveDrop('${ex.id}',${si},${di})">✕</button>
     </div>`).join('');
     return `<div class="rx-adv-edit">
       <div class="rx-adv-erow">
         <span class="set-badge">${si+1}</span>
-        <select class="rx-type-sel" onchange="rmUpdateSet('${ex.id}',${si},'type',this.value)">${typeOpts(t)}</select>
+        <select class="rx-type-sel" onchange="rmUpdateSet('${ex.id}',${si},'type',this.value,this)">${typeOpts(t)}</select>
       </div>
       <div class="rx-adv-egrid">
-        <div class="rx-ef"><label>Reps</label><input type="number" class="set-input" min="1" max="50" value="${s.reps}" onchange="rmUpdateSet('${ex.id}',${si},'reps',this.value)"></div>
-        <div class="rx-ef"><label>RIR</label><input type="number" class="set-input" min="0" max="6" value="${s.rir}" onchange="rmUpdateSet('${ex.id}',${si},'rir',this.value)"></div>
-        <div class="rx-ef"><label>Peso (${ul})</label><input type="number" class="set-input" min="0" step="0.5" value="${s.weight}" onchange="rmUpdateSet('${ex.id}',${si},'weight',this.value)"></div>
-        <div class="rx-ef"><label>Tempo</label><input type="text" class="set-input wide" value="${esc(s.tempo||'')}" placeholder="3-1-2-0" onchange="rmUpdateSet('${ex.id}',${si},'tempo',this.value)"></div>
+        <div class="rx-ef"><label>Reps</label><input type="number" class="set-input" min="1" max="50" value="${s.reps}" onchange="rmUpdateSet('${ex.id}',${si},'reps',this.value,this)"></div>
+        <div class="rx-ef"><label>RIR</label><input type="number" class="set-input" min="0" max="10" step="1" value="${s.rir}" onchange="rmUpdateSet('${ex.id}',${si},'rir',this.value,this)"></div>
+        <div class="rx-ef"><label>Peso (${ul})</label><input type="number" class="set-input" min="0" step="0.5" value="${s.weight}" onchange="rmUpdateSet('${ex.id}',${si},'weight',this.value,this)"></div>
+        <div class="rx-ef"><label>Tempo</label><input type="text" class="set-input wide" value="${esc(s.tempo||'')}" placeholder="3-1-2-0" onchange="rmUpdateSet('${ex.id}',${si},'tempo',this.value,this)"></div>
       </div>
-      <input type="text" class="rx-note-input" value="${esc(s.note||'')}" placeholder="Nota de la serie (opcional)" onchange="rmUpdateSet('${ex.id}',${si},'note',this.value)">
+      <input type="text" class="rx-note-input" value="${esc(s.note||'')}" placeholder="Nota de la serie (opcional)" onchange="rmUpdateSet('${ex.id}',${si},'note',this.value,this)">
       <div class="rx-drops-edit">${drops}<button class="rx-drop-add" onclick="rmAddDrop('${ex.id}',${si})">＋ Dropset</button></div>
     </div>`;
   }).join('')}</div>`;
@@ -2694,10 +2758,15 @@ function rmRemoveExercise(id){
   if(!confirm(`Remove "${ex?ex.name:'exercise'}"?`))return;
   w.exercises=w.exercises.filter(e=>e.id!==id);saveRoutines();renderRM();
 }
-function rmUpdateExercise(id,field,val){
+function rmUpdateExercise(id,field,val,el){
   const w=curWorkout();const ex=findExercise(w,id);if(!ex)return;
   if(field==='restSeconds')ex.restSeconds=Math.max(0,parseInt(val)||0);
   else if(field==='unit'){ex.unit=val;saveRoutines();renderRM();return;}
+  else if(field==='name'){
+    const nm=cleanExName(val);
+    if(nm)ex.name=nm;          // blank name → keep the previous one
+    if(el)el.value=ex.name;
+  }
   else ex[field]=val;
   saveRoutines();
 }
@@ -2718,21 +2787,23 @@ function rmRemoveSet(id){
 }
 /* string fields (Advanced) vs numeric fields */
 const RX_STR_FIELDS=new Set(['tempo','note','type']);
-function rmUpdateSet(id,si,field,val){
+function rmUpdateSet(id,si,field,val,el){
   const w=curWorkout();const ex=findExercise(w,id);if(!ex||!ex.sets[si])return;
   if(RX_STR_FIELDS.has(field)){
     const v=(val||'').toString().trim();
     if(v)ex.sets[si][field]=v; else delete ex.sets[si][field];
   } else {
-    ex.sets[si][field]=field==='weight'?(parseFloat(val)||0):(parseInt(val)||0);
+    ex.sets[si][field]=cleanSetNum(field,val);
+    if(el)el.value=ex.sets[si][field];
   }
   saveRoutines();
 }
 /* Level 1 — apply reps/weight uniformly across every set */
-function rmSetUniform(id,field,val){
+function rmSetUniform(id,field,val,el){
   const w=curWorkout();const ex=findExercise(w,id);if(!ex)return;
-  const num=field==='weight'?(parseFloat(val)||0):(parseInt(val)||0);
+  const num=cleanSetNum(field,val);
   ex.sets.forEach(s=>{s[field]=num;});
+  if(el)el.value=num;
   saveRoutines();
 }
 /* Level 3 — dropset editing */
@@ -2749,9 +2820,11 @@ function rmRemoveDrop(id,si,di){
   if(!ex.sets[si].dropsets.length)delete ex.sets[si].dropsets;
   saveRoutines();renderRM();
 }
-function rmUpdateDrop(id,si,di,field,val){
+function rmUpdateDrop(id,si,di,field,val,el){
   const w=curWorkout();const ex=findExercise(w,id);if(!ex||!ex.sets[si]||!ex.sets[si].dropsets||!ex.sets[si].dropsets[di])return;
-  ex.sets[si].dropsets[di][field]=field==='weight'?(parseFloat(val)||0):(parseInt(val)||0);
+  const d=ex.sets[si].dropsets[di];
+  d[field]=field==='weight'?cleanWeight(val):cleanReps(val);
+  if(el)el.value=d[field];
   saveRoutines();
 }
 function rmClearJournal(){
@@ -2829,9 +2902,9 @@ function playerSetView(){
   }
   const actual=`
     <div class="player-actual">
-      <div class="pactual"><label>Reps</label><input type="number" id="pl-reps" inputmode="numeric" value="${q.target.reps}"></div>
-      ${showRir?`<div class="pactual"><label>RIR</label><input type="number" id="pl-rir" inputmode="numeric" value="${q.target.rir}"></div>`:''}
-      <div class="pactual"><label>Weight (${dispUl})</label><input type="number" id="pl-wt" inputmode="decimal" step="0.5" value="${dispWeight}"></div>
+      <div class="pactual"><label>Reps</label><input type="number" id="pl-reps" inputmode="numeric" min="0" step="1" value="${q.target.reps}" onchange="if(this.value!=='')this.value=cleanReps(this.value)"></div>
+      ${showRir?`<div class="pactual"><label>RIR</label><input type="number" id="pl-rir" inputmode="numeric" min="0" max="${RIR_MAX}" step="1" value="${q.target.rir}" onchange="if(this.value!=='')this.value=cleanRir(this.value)"></div>`:''}
+      <div class="pactual"><label>Weight (${dispUl})</label><input type="number" id="pl-wt" inputmode="decimal" min="0" step="0.5" value="${dispWeight}" onchange="if(this.value!=='')this.value=cleanWeight(this.value)"></div>
     </div>`;
   return `
     <div class="player-progbar"><div class="player-progbar-fill" style="width:${pct}%"></div></div>
@@ -2856,17 +2929,21 @@ function playerNext(){
     loggedWeight=q.target.weight;
   } else if(player.viewTranslated){
     const t=translateWeight(+q.target.weight,q.unit); // what the translated target shows
-    loggedWeight=(Math.abs(parseFloat(raw)-t.weight)<1e-6)
+    const rw=cleanWeight(raw);
+    loggedWeight=(Math.abs(rw-t.weight)<1e-6)
       ? q.target.weight                               // did exactly as shown → original target
-      : translateWeight(parseFloat(raw),t.unit).weight; // converted back to original unit + snapped
+      : (rw>0?translateWeight(rw,t.unit).weight:0);   // converted back to original unit + snapped (0 = bodyweight)
   } else {
     loggedWeight=raw;
   }
   const rirEl=document.getElementById('pl-rir');
+  const repsRaw=document.getElementById('pl-reps').value;
+  const rirRaw=rirEl?rirEl.value:'';
+  // validated numbers: reps ≥0 int · RIR 0–10 int · weight ≥0 (0 = bodyweight)
   const actual={
-    reps:document.getElementById('pl-reps').value||q.target.reps,
-    rir:rirEl?(rirEl.value||q.target.rir):q.target.rir,  // Simple level has no RIR input → keep target
-    weight:loggedWeight
+    reps:cleanReps(repsRaw!==''?repsRaw:q.target.reps),
+    rir:cleanRir(rirRaw!==''?rirRaw:q.target.rir),  // Simple level has no RIR input → keep target
+    weight:cleanWeight(loggedWeight)
   };
   player.records.push({exId:q.exId,exName:q.exName,unit:q.unit,muscles:q.muscles||[],setNum:q.setNum,target:{...q.target},actual});
   const isLast=player.pos===player.queue.length-1;
@@ -3164,26 +3241,27 @@ function safeName(s){return String(s).replace(/[^\w\-]+/g,'_').slice(0,40)||'gym
 function cloneRoutineFresh(r){
   const validKeys=new Set(MUSCLE_GROUPS.map(g=>g.key));
   const muscleKeyMap={'back':'upperback','lowerback':'upperback','erector':'upperback','traps':'upperback','forearms':'biceps'};
-  const cleanSet=s=>{
-    const o={reps:+s.reps||0,rir:+s.rir||0,weight:+s.weight||0};
-    // preserve Advanced-level fields when present
-    if(s.tempo)o.tempo=(''+s.tempo).trim();
-    if(s.type&&RX_SET_TYPES[s.type])o.type=s.type;
-    if(s.note)o.note=(''+s.note).trim();
-    if(Array.isArray(s.dropsets)&&s.dropsets.length)o.dropsets=s.dropsets.map(d=>({reps:+d.reps||0,weight:+d.weight||0}));
-    return o;
-  };
   return {id:uid(),name:r.name||'Imported',icon:r.icon||'📋',complexity:rxLvl(r),workouts:(r.workouts||[]).map(w=>({
     id:uid(),name:w.name||'Workout',exercises:(w.exercises||[]).map(e=>({
-      id:uid(),name:e.name||'Exercise',meta:e.meta||'',unit:UNITS[e.unit]?e.unit:'kg',restSeconds:parseInt(e.restSeconds)||90,
-      muscles:Array.isArray(e.muscles)?e.muscles.filter(m=>m&&m.key).map(m=>{
+      id:uid(),name:cleanExName(e.name)||'Exercise',meta:e.meta||'',unit:UNITS[e.unit]?e.unit:'kg',restSeconds:parseInt(e.restSeconds)||90,
+      muscles:dedupeMuscles(Array.isArray(e.muscles)?e.muscles.filter(m=>m&&m.key).map(m=>{
         let k=m.key.toLowerCase();
         if(muscleKeyMap[k])k=muscleKeyMap[k];
         return validKeys.has(k)?{key:k,role:m.role==='primary'?'primary':'secondary'}:null;
-      }).filter(m=>m):[],
-      sets:(e.sets||[]).map(cleanSet)
+      }).filter(m=>m):[]),
+      sets:(e.sets||[]).map(cleanImportedSet)
     }))
   }))};
+}
+/* imported / cloned set → validated numbers + Advanced-level fields when present */
+function cleanImportedSet(s){
+  s=s||{};
+  const o={reps:cleanReps(s.reps),rir:cleanRir(s.rir),weight:cleanWeight(s.weight)};
+  if(s.tempo)o.tempo=(''+s.tempo).trim();
+  if(s.type&&RX_SET_TYPES[s.type])o.type=s.type;
+  if(s.note)o.note=(''+s.note).trim();
+  if(Array.isArray(s.dropsets)&&s.dropsets.length)o.dropsets=s.dropsets.map(d=>({reps:cleanReps(d&&d.reps),weight:cleanWeight(d&&d.weight)}));
+  return o;
 }
 function exportRoutine(id){
   const r=findRoutine(id);if(!r)return;
@@ -3309,7 +3387,7 @@ function forestProbs(trees,x){
 const CKEY='gymAI_corrections_v3';
 function loadCorrections(){
   let c=JSON.parse(localStorage.getItem(aKey(CKEY))||'null');
-  if(c)return c;
+  if(c)return trimExKeys(c);
   // migrate v2 → v3: keep the user's exercise-level intent (label/delta/
   // confirmed) but drop the old 3-feature vector — it can't be re-expanded
   // to the new 9-D space, so trainRF simply won't reinforce from it until
@@ -3335,7 +3413,7 @@ let rfLastFeat={}, rfLastPred={}, rfLastAgg={};
    locked (no more help) until you record a NEW session of that workout — a
    newer log appears and it auto-unlocks. Persisted per account. */
 const RFLKEY='gymAI_rflocks_v1';
-function loadRFLocks(){try{return JSON.parse(localStorage.getItem(aKey(RFLKEY))||'{}')||{};}catch(e){return {};}}
+function loadRFLocks(){try{return trimExKeys(JSON.parse(localStorage.getItem(aKey(RFLKEY))||'{}')||{});}catch(e){return {};}}
 function saveRFLocks(o){localStorage.setItem(aKey(RFLKEY),JSON.stringify(o));}
 function rfLockExercise(key,lastDate){const l=loadRFLocks();l[key]=lastDate||new Date().toISOString();saveRFLocks(l);}
 function rfUnlockExercise(key){const l=loadRFLocks();delete l[key];saveRFLocks(l);}
@@ -3505,7 +3583,7 @@ function rfToggleEx(exId){if(rfOpenEx.has(exId))rfOpenEx.delete(exId);else rfOpe
    Reach a target weight in N weeks while holding the prescribed reps/RIR.
    Stored per account; keyed routineName::workoutName::exerciseName. */
 const RGKEY='gymAI_goals_v1';
-function loadGoals(){try{return JSON.parse(localStorage.getItem(aKey(RGKEY))||'{}')||{};}catch(e){return {};}}
+function loadGoals(){try{return trimExKeys(JSON.parse(localStorage.getItem(aKey(RGKEY))||'{}')||{});}catch(e){return {};}}
 function saveGoals(o){localStorage.setItem(aKey(RGKEY),JSON.stringify(o));}
 function rfKey(rName,wName,exName){return rName+'::'+wName+'::'+exName;}
 function goalWeeks(g){return Math.max(1,Math.round((new Date(g.deadlineISO)-new Date(g.startISO))/(7*864e5)));}
@@ -5152,9 +5230,9 @@ function rwPreview(type,payloadStr){
 }
 function cloneWorkoutFresh(w){
   return {id:uid(),name:w.name||'Workout',exercises:(w.exercises||[]).map(e=>({
-    id:uid(),name:e.name||'Exercise',meta:e.meta||'',unit:UNITS[e.unit]?e.unit:'kg',restSeconds:parseInt(e.restSeconds)||90,
-    muscles:Array.isArray(e.muscles)?e.muscles.filter(m=>m&&m.key).map(m=>({key:m.key,role:m.role==='primary'?'primary':'secondary'})):[],
-    sets:(e.sets||[]).map(s=>({reps:+s.reps||0,rir:+s.rir||0,weight:+s.weight||0}))
+    id:uid(),name:cleanExName(e.name)||'Exercise',meta:e.meta||'',unit:UNITS[e.unit]?e.unit:'kg',restSeconds:parseInt(e.restSeconds)||90,
+    muscles:dedupeMuscles(e.muscles),
+    sets:(e.sets||[]).map(s=>{s=s||{};return {reps:cleanReps(s.reps),rir:cleanRir(s.rir),weight:cleanWeight(s.weight)};})
   }))};
 }
 let _pendingWorkout=null;
