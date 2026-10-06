@@ -2573,7 +2573,7 @@ function viewJournalRoutines(){
     <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
     <div class="rm-title">War Journal 📓</div>
     <div class="rm-subtitle">Organized by routine ▸ workout ▸ session.</div>
-    ${names.length?`<div class="rm-toolbar"><select id="sj-period" class="rm-btn ghost" onchange="sjPeriodChanged()"><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="12">Últimas 12 semanas</option><option value="all">Todo el historial</option><option value="custom">Rango personalizado…</option></select><span id="sj-custom" style="display:none;gap:.4rem;align-items:center"><input type="date" id="sj-from" class="rm-btn ghost"><input type="date" id="sj-to" class="rm-btn ghost"></span><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
+    ${names.length?`<div class="rm-toolbar"><select id="sj-period" class="rm-btn ghost" onchange="sjPeriodChanged()"><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="12">Últimas 12 semanas</option><option value="all">Todo el historial</option><option value="custom">Rango personalizado…</option></select><span id="sj-custom" style="display:none;gap:.4rem;align-items:center"><input type="date" id="sj-from" class="rm-btn ghost"><input type="date" id="sj-to" class="rm-btn ghost"></span><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
     ${body}`;
 }
 
@@ -3361,6 +3361,119 @@ function exportSuperJournal(){
   if(!j.length){showToast('No hay sesiones en ese periodo');return;}
   downloadFile('gymai-super-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(buildJournalExport(j.slice().reverse(),true,period),null,2));
   showToast('Super Journal exportado · '+j.length+' sesiones');
+}
+/* ══════════════════════════════════════
+   COACH REPORT — compact summary for the coach-gym Skill
+   {app,type:'coachReport',schemaVersion:1,…}. Built and downloaded on the
+   device only; nothing is sent anywhere. Weights stay in each exercise's own
+   unit (kg | lb | kg_db | lb_db = per dumbbell) and every block says which.
+══════════════════════════════════════ */
+const COACH_REPORT_SCHEMA=1;
+const UNIT_INFO={kg:'kg',lb:'lb',kg_db:'kg por mancuerna',lb_db:'lb por mancuerna'};
+function ymdOf(d){d=new Date(d);return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
+function weekStartOf(d){d=new Date(d);d.setHours(0,0,0,0);d.setDate(d.getDate()-((d.getDay()+6)%7));return ymdOf(d);}   // Monday
+function e1rm(w,r){w=+w||0;r=+r||0;return w>0&&r>0?round1(w*(1+r/30)):0;}   // Epley, in the exercise's unit
+function rsSet(t){return {reps:+t.reps||0,weight:+t.weight||0,rir:t.rir==null?null:+t.rir};}
+/* the plan a session followed: the routine version in force that day (routineHistory), else today's */
+function planFor(routineName,workoutName,dateISO){
+  const day=ymdOf(dateISO);
+  const h=listLive('routineHistory').filter(x=>x.routine&&x.routine.name===routineName&&x.date<=day)
+    .sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).pop();
+  const r=h?h.routine:routines.find(x=>x.name===routineName);
+  const w=r&&(r.workouts||[]).find(x=>x.name===workoutName);
+  return w?{source:h?'routineHistory':'currentRoutine',exercises:w.exercises||[]}:null;
+}
+function compactRoutine(r){
+  return r?{name:r.name,workouts:(r.workouts||[]).map(w=>({name:w.name,exercises:(w.exercises||[]).map(e=>({
+    name:e.name,unit:e.unit||'kg',restSeconds:e.restSeconds,muscles:e.muscles||[],sets:(e.sets||[]).map(rsSet)}))}))}:null;
+}
+function buildCoachReport(){
+  const now=new Date(),dAgo=n=>{const d=new Date();d.setDate(d.getDate()-n);return d;};
+  const W8=weekStartOf(dAgo(49)),D14=dAgo(14).toISOString(),D112=ymdOf(dAgo(112)),curWeek=weekStartOf(now);
+  const J=loadJournal().slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));   // oldest → newest
+  const inW8=J.filter(s=>weekStartOf(s.dateISO)>=W8);
+  const coach=coachProfileFull();
+
+  // per exercise (name + unit): best set ever, last session, recent trend of the top set vs target
+  const ex={};
+  J.forEach(s=>(s.exercises||[]).forEach(x=>{
+    const sets=(x.sets||[]).filter(t=>t&&t.actual);if(!sets.length)return;
+    const unit=x.unit||'kg',k=x.name+'|'+unit,e=ex[k]||(ex[k]={exercise:x.name,unit,muscles:x.muscles||[],best:null,hist:[]});
+    sets.forEach(t=>{const v=e1rm(t.actual.weight,t.actual.reps);if(v&&(!e.best||v>e.best.e1rm))e.best=Object.assign({date:ymdOf(s.dateISO),e1rm:v},rsSet(t.actual));});
+    const top=sets.reduce((a,t)=>(+t.actual.weight>+a.actual.weight||(+t.actual.weight===+a.actual.weight&&+t.actual.reps>+a.actual.reps))?t:a);
+    e.hist.push({date:ymdOf(s.dateISO),iso:s.dateISO,routine:s.routineName,workout:s.workoutName,sets,top});
+  }));
+  const exercises=Object.values(ex).filter(e=>e.hist.some(h=>weekStartOf(h.iso)>=W8)).map(e=>{
+    const last=e.hist[e.hist.length-1],trend=e.hist.slice(-6).map(h=>({
+      date:h.date,sets:h.sets.length,top:rsSet(h.top.actual),target:rsSet(h.top.target||{}),
+      metTarget:+h.top.actual.reps>=+(h.top.target||{}).reps&&+h.top.actual.weight>=+(h.top.target||{}).weight,
+      e1rm:e1rm(h.top.actual.weight,h.top.actual.reps)}));
+    return {exercise:e.exercise,unit:e.unit,muscles:e.muscles,bestSet:e.best,
+      lastSession:{date:last.date,routine:last.routine,workout:last.workout,sets:last.sets.map(t=>({target:rsSet(t.target||{}),actual:rsSet(t.actual)}))},
+      trend,e1rmChange:trend.length>1?round1(trend[trend.length-1].e1rm-trend[0].e1rm):null};
+  }).sort((a,b)=>String(b.lastSession.date).localeCompare(String(a.lastSession.date)));
+
+  // weekly direct sets per muscle (sets where the muscle is primary) + adherence, last 8 weeks
+  const weeks=[];for(let i=7;i>=0;i--){weeks.push({weekStart:weekStartOf(dAgo(i*7)),sessions:0,directSets:{}});}
+  const wk={};weeks.forEach(w=>wk[w.weekStart]=w);
+  inW8.forEach(s=>{const w=wk[weekStartOf(s.dateISO)];if(!w)return;w.sessions++;
+    (s.exercises||[]).forEach(x=>{const n=(x.sets||[]).filter(t=>t&&t.actual&&+t.actual.reps>0).length;if(!n)return;
+      (x.muscles||[]).filter(m=>m.role==='primary').forEach(m=>{w.directSets[m.key]=(w.directSets[m.key]||0)+n;});});});
+  const planned=coach.availability.daysPerWeek||null,full=weeks.filter(w=>w.weekStart!==curWeek),done=full.reduce((a,w)=>a+w.sessions,0);
+
+  // skipped / incomplete exercises vs the plan of that day
+  const skipped=[],skipCount={};
+  inW8.forEach(s=>{
+    const plan=planFor(s.routineName,s.workoutName,s.dateISO);if(!plan)return;
+    const doneSets={};(s.exercises||[]).forEach(x=>{doneSets[x.name]=(doneSets[x.name]||0)+(x.sets||[]).length;});
+    const sk=[],inc=[];
+    plan.exercises.forEach(pe=>{const d=doneSets[pe.name]||0,pl=(pe.sets||[]).length;
+      if(!d){sk.push(pe.name);skipCount[pe.name]=(skipCount[pe.name]||0)+1;}else if(d<pl)inc.push({exercise:pe.name,setsDone:d,setsPlanned:pl});});
+    if(sk.length||inc.length)skipped.push({date:ymdOf(s.dateISO),routine:s.routineName,workout:s.workoutName,planSource:plan.source,skipped:sk,incomplete:inc});
+  });
+
+  // body: dated series (16 weeks) + weekly average weight (8 weeks)
+  const BL=loadBodyLog().slice().reverse(),blRecent=BL.filter(e=>e.date>=D112);
+  const wAvg={};BL.filter(e=>e.weightKg!=null&&weekStartOf(e.date+'T12:00:00')>=W8).forEach(e=>{const k=weekStartOf(e.date+'T12:00:00');(wAvg[k]=wAvg[k]||[]).push(e.weightKg);});
+  const L=bodyLogLatest();
+
+  // goals: dated goals in force + per-exercise weight goals + the coach-profile goal
+  const exGoals=Object.entries(loadGoals()).map(([k,g])=>{const [rn,wn,en]=k.split('::');
+    const r=routines.find(x=>x.name===rn),w=r&&r.workouts.find(x=>x.name===wn),e=w&&w.exercises.find(x=>x.name===en);
+    return {routine:rn,workout:wn,exercise:en,unit:e?(e.unit||'kg'):null,startWeight:g.startWeight,targetWeight:g.targetWeight,startDate:ymdOf(g.startISO),deadline:ymdOf(g.deadlineISO)};});
+  const notes=listLive('notes');
+  const active=J.length?J[J.length-1].routineName:null;
+
+  return {app:'GymAI',type:'coachReport',schemaVersion:COACH_REPORT_SCHEMA,generatedAt:now.toISOString(),
+    units:{weights:'en la unidad de cada ejercicio (campo unit)',legend:UNIT_INFO,bodyWeight:'kg',measurements:'cm',
+      toKg:'lb × 0.453592; *_db = por mancuerna (×2 para el total)'},
+    window:{weeks8From:W8,sessionDetailFrom:ymdOf(D14),bodySeriesFrom:D112,today:todayStr()},
+    athlete:coach,
+    goals:{coachProfileGoal:coach.goal,active:goalsActive().map(g=>({phase:g.phase,description:g.description,startDate:g.startDate,targetDate:g.targetDate})),
+      exerciseGoals:exGoals},
+    injuriesAndNotes:{activeInjuries:notes.filter(n=>n.type==='injury'&&!n.resolvedDate).map(n=>({date:n.date,text:n.text})),
+      recent:notes.filter(n=>n.date>=D112).map(n=>({date:n.date,type:n.type,text:n.text,resolvedDate:n.resolvedDate}))},
+    body:{latest:L,
+      weight:blRecent.filter(e=>e.weightKg!=null).map(e=>({date:e.date,kg:e.weightKg})),
+      bodyFat:blRecent.filter(e=>e.bodyFatPercent!=null).map(e=>({date:e.date,pct:e.bodyFatPercent,method:e.bodyFatMethod})),
+      measurements:blRecent.filter(e=>BODY_M_KEYS.some(k=>e.measurementsCm[k]!=null)).map(e=>{const m={date:e.date};BODY_M_KEYS.forEach(k=>{if(e.measurementsCm[k]!=null)m[k]=e.measurementsCm[k];});return m;}),
+      weeklyAvgWeightKg:Object.keys(wAvg).sort().map(k=>({weekStart:k,avg:round1(wAvg[k].reduce((a,b)=>a+b,0)/wAvg[k].length),n:wAvg[k].length}))},
+    activeRoutine:compactRoutine(routines.find(r=>r.name===active)||null),
+    exercises,
+    weeklyDirectSetsByMuscle:weeks.map(w=>({weekStart:w.weekStart,partial:w.weekStart===curWeek,sets:w.directSets})),
+    adherence:{plannedPerWeek:planned,weeks:weeks.map(w=>({weekStart:w.weekStart,done:w.sessions,partial:w.weekStart===curWeek})),
+      fullWeeks:full.length,done,planned:planned?planned*full.length:null,pct:planned&&full.length?Math.round(100*done/(planned*full.length)):null},
+    skippedExercises:{bySession:skipped,countByExercise:skipCount},
+    recentSessions:J.filter(s=>s.dateISO>=D14).reverse().map(s=>({date:s.dateISO,startedAt:s.startedAt||null,routine:s.routineName,workout:s.workoutName,
+      durationMin:Math.max(1,Math.round((s.durationSec||0)/60)),
+      exercises:(s.exercises||[]).map(x=>({name:x.name,unit:x.unit||'kg',sets:(x.sets||[]).map(t=>({set:t.setNum,target:rsSet(t.target||{}),actual:rsSet(t.actual||{}),at:t.at||null}))}))}))
+  };
+}
+function exportCoachReport(){
+  if(!cloudState.user){showToast('Inicia sesión para generar el informe');return;}
+  const r=buildCoachReport();
+  downloadFile('gymai-coach-report-'+todayStr()+'.json',JSON.stringify(r,null,1));
+  showToast('Informe para el coach descargado');
 }
 function triggerImport(){document.getElementById('import-file').click();}
 function importFromFile(file){
@@ -4925,7 +5038,8 @@ function coachSectionHTML(){
     const cs=c.coachSettings;
     chips.push(`<span class="bl-chip">⚙️ ${L(cs.mode)} · ${L(cs.reactionLevel)} · ${L(cs.responseLength)}</span>`);
     body=`<div class="bl-chips" style="margin-bottom:12px">${chips.join('')}</div>
-      <button class="pf-social-btn" style="width:100%" onclick="coachOpen()">✎ Editar perfil del coach</button>`;
+      <button class="pf-social-btn" style="width:100%" onclick="coachOpen()">✎ Editar perfil del coach</button>
+      <button class="pf-social-btn" style="width:100%;margin-top:8px" onclick="exportCoachReport()">📋 Informe para el coach</button>`;
   }
   return `<div class="section-label" style="margin-top:22px">Perfil del coach</div>
     <div class="cv-section"><div class="cv-gauge">${body}</div></div>`;
