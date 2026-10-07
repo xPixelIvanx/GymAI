@@ -3385,22 +3385,23 @@ function programAddAdjustment(id,a){
     p.adjustments.push({date:today,change:[a.change,ch.length?'Nutrición — '+ch.join('; '):''].filter(Boolean).join(' · '),reason:a.reason||'',source:a.source==='coach'?'coach':'user'});
   });
 }
-/* heaviest logged weight for an exercise since a date, with its unit (sessions already hold the unit) */
-function pgExerciseBest(name,sinceYMD){
+/* heaviest logged weight for an exercise since a date (and up to one, optional), with its unit (sessions already hold the unit) */
+function pgExerciseBest(name,sinceYMD,upToYMD){
   const want=String(name||'').trim().toLowerCase();let best=null,unit=null;
   loadJournal().forEach(s=>{
     if(sinceYMD&&ymdOf(s.dateISO)<sinceYMD)return;
+    if(upToYMD&&ymdOf(s.dateISO)>upToYMD)return;
     (s.exercises||[]).forEach(x=>{if(String(x.name||'').trim().toLowerCase()!==want)return;
       (x.sets||[]).forEach(st=>{const w=+(st&&st.actual&&st.actual.weight)||0;if(best==null||w>best){best=w;unit=x.unit||'kg';}});});});
   return best==null?null:{value:best,unit};
 }
 /* progress of one goal from data that already exists (body log / journal); "other" has no automatic value */
-function programGoalProgress(p,g){
-  let cur=null,unit='';const L=bodyLogLatest();
+function programGoalProgress(p,g,upTo){
+  let cur=null,unit='';const L=bodyLogLatest(upTo);
   if(g.metric==='weightKg'){cur=L.weightKg;unit='kg';}
   else if(g.metric==='bodyFatPercent'){cur=L.bodyFatPercent;unit='%';}
   else if(g.metric==='waistCm'){cur=L.measurementsCm.waist;unit='cm';}
-  else if(g.metric==='exerciseWeight'){const b=pgExerciseBest(g.exercise,p.startDate);if(b){cur=b.value;unit=unitLabel(b.unit);}}
+  else if(g.metric==='exerciseWeight'){const b=pgExerciseBest(g.exercise,p.startDate,upTo);if(b){cur=b.value;unit=unitLabel(b.unit);}}
   if(cur===undefined)cur=null;
   const s=g.startValue,t=g.targetValue;let pct=null;
   if(cur!=null&&s!=null&&t!=null)pct=s===t?(cur===t?100:0):Math.max(0,Math.min(100,Math.round(100*(cur-s)/(t-s))));
@@ -3432,11 +3433,13 @@ function pgWeekText(p){
   return tot+' semana'+(tot!==1?'s':'');
 }
 /* paced against time: bar is green when on schedule or reached, ember when behind */
+function pgExpectedPct(p,g){   // how far along the goal should be today, by time alone
+  const end=validYMD(g.targetDate)?g.targetDate:p.endDate,t0=pgDayNum(p.startDate),t1=pgDayNum(end),now=pgDayNum(todayStr());
+  return t1<=t0?100:Math.max(0,Math.min(100,Math.round(100*(now-t0)/(t1-t0))));
+}
 function pgPace(p,g,pr){
   if(pr.reached)return 'done';if(pr.pct==null)return '';
-  const end=validYMD(g.targetDate)?g.targetDate:p.endDate,t0=pgDayNum(p.startDate),t1=pgDayNum(end),now=pgDayNum(todayStr());
-  const exp=t1<=t0?100:Math.max(0,Math.min(100,Math.round(100*(now-t0)/(t1-t0))));
-  return pr.pct>=exp-10?'ontrack':'behind';
+  return pr.pct>=pgExpectedPct(p,g)-10?'ontrack':'behind';
 }
 function pgGoalRowHTML(p,g){
   const pr=programGoalProgress(p,g),u=pr.unit?' '+esc(pr.unit):'';
@@ -5199,10 +5202,11 @@ function cloudPushBodyLog(){
     .then(()=>{localStorage.removeItem(dirtyKey);markSynced('bodyLog');})
     .catch(e=>{console.warn('[BodyLog] sync failed',e);showToast('Registro corporal guardado en este dispositivo · pendiente de sincronizar');});
 }
-/* latest known value of each field (an entry may hold only some fields) */
-function bodyLogLatest(){
+/* latest known value of each field (an entry may hold only some fields); upTo (YYYY-MM-DD) ignores later entries */
+function bodyLogLatest(upTo){
   const out={weightKg:null,weightDate:null,bodyFatPercent:null,bodyFatDate:null,bodyFatMethod:null,measurementsCm:{},measurementDates:{}};
   loadBodyLog().forEach(e=>{
+    if(upTo&&e.date>upTo)return;
     if(out.weightKg==null&&e.weightKg!=null){out.weightKg=e.weightKg;out.weightDate=e.date;}
     if(out.bodyFatPercent==null&&e.bodyFatPercent!=null){out.bodyFatPercent=e.bodyFatPercent;out.bodyFatDate=e.date;out.bodyFatMethod=e.bodyFatMethod;}
     BODY_M_KEYS.forEach(k=>{if(out.measurementsCm[k]==null&&e.measurementsCm[k]!=null){out.measurementsCm[k]=e.measurementsCm[k];out.measurementDates[k]=e.date;}});
@@ -5968,9 +5972,10 @@ async function coachSave(){
 
 /* ---- goals (with start / target / end dates) and injuries & notes ---- */
 /* FUENTE ÚNICA de objetivos vigentes: el programa activo (sus metas) o, si no hay, los de data/goals */
+function pgGoalsAsActive(pg){return pg.goals.map(g=>({phase:pg.phase,description:g.description,startDate:pg.startDate,targetDate:g.targetDate||pg.endDate||null,source:'program',programId:pg.id}));}
 function goalsActive(){
   const pg=programActive();
-  if(pg)return pg.goals.map(g=>({phase:pg.phase,description:g.description,startDate:pg.startDate,targetDate:g.targetDate||pg.endDate||null,source:'program',programId:pg.id}));
+  if(pg)return pgGoalsAsActive(pg);
   return listLive('goals').filter(g=>!g.endDate);
 }
 function goalsNotesSectionHTML(){
