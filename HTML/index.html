@@ -3746,6 +3746,7 @@ function viewData(){
     <div class="rm-toolbar">
       <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
       <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
+      ${demoHas()?`<button class="rm-btn danger" onclick="demoRemove()">✕ Quitar datos de prueba</button>`:`<button class="rm-btn ghost" onclick="demoSeed()">🧪 Cargar datos de prueba</button>`}
       <div class="spacer"></div>
       <button class="rm-btn ghost" onclick="rmGoInspect()">🔍 Modo inspección</button>
     </div>
@@ -3787,6 +3788,153 @@ async function dataWipe(){
   if(typeof cloudSyncMe==='function')cloudSyncMe();
   if(typeof rfSync==='function')rfSync();
   showToast(c.label+': borrado');
+}
+
+/* ══════════════════════════════════════
+   DEMO DATA — ~9 weeks of realistic history to try the coach Skill
+   (Datos ▸ Cargar datos de prueba). Everything added is tagged demo:true /
+   id "demo-…", so «Quitar datos de prueba» removes exactly that and never
+   touches your own records. Deterministic (seeded) so reports are reproducible.
+══════════════════════════════════════ */
+const DEMO_ROUTINE='Upper/Lower Hipertrofia (demo)';
+function isDemo(x){return !!x&&(x.demo===true||String(x.id||'').indexOf('demo-')===0||String(x.routineId||'').indexOf('demo-')===0);}
+function demoHas(){try{return routines.some(isDemo)||loadJournal().some(isDemo)||listLoad('goals').some(isDemo);}catch(e){return false;}}
+function demoPlan(version){
+  // name, unit, muscles ("*" = secondary), sets, reps, rir, base weight, +weight every 2 weeks, rest
+  const E=(name,unit,m,sets,reps,rir,w,inc,rest)=>({name,unit,sets,reps,rir,w,inc,rest,
+    muscles:m.split(',').map(k=>({key:k.replace('*',''),role:k.endsWith('*')?'secondary':'primary'}))});
+  return [
+    {key:'ua',name:'Upper A',day:0,ex:[E('Press banca con barra','kg','chest,triceps*,shoulders*',4,8,2,77.5,2.5,150),
+      E('Remo con barra','kg','upperback,lats*,biceps*',4,8,2,70,2.5,120),E('Press militar con mancuernas','kg_db','shoulders,triceps*',3,10,2,20,1,120),
+      E('Jalón al pecho','kg','lats,biceps*',3,10,2,60,2.5,90),E('Elevaciones laterales','kg_db','shoulders',3,15,1,9,0.5,60),
+      E('Curl con barra Z','kg','biceps',3,12,1,30,1.25,60)]},
+    {key:'la',name:'Lower A',day:1,ex:[E('Sentadilla','kg','quads,glutes*',4,6,2,100,2.5,180),
+      E('Peso muerto rumano','kg','hamstrings,glutes*',3,8,2,90,2.5,150),E('Prensa','kg','quads',3,12,2,180,5,120),
+      E('Curl femoral tumbado','kg','hamstrings',3,12,1,45,1.25,75),E('Elevación de talones de pie','kg','calves',4,15,1,80,2.5,60)]},
+    {key:'ub',name:'Upper B',day:3,ex:[E('Press inclinado con mancuernas','kg_db','chest,shoulders*',4,10,2,28,1,120),
+      E('Dominadas','kg','lats,biceps*',4,7,2,0,0,120),E('Press militar con barra','kg','shoulders,triceps*',3,8,2,45,1.25,120),
+      E('Remo en polea baja','lb','upperback,lats*',3,12,2,140,5,90),E('Elevaciones laterales en polea','kg','shoulders',3,15,1,7.5,0,60),
+      E('Extensión de tríceps en polea','kg','triceps',3,12,1,25,1.25,60)]},
+    {key:'lb',name:'Lower B',day:4,ex:[E('Peso muerto convencional','kg','hamstrings,glutes*,upperback*',3,5,2,130,2.5,180),
+      version===1?E('Extensión de cuádriceps','kg','quads',3,15,1,55,2.5,75):E('Sentadilla búlgara','kg_db','quads,glutes*',3,10,2,16,1,120),
+      E('Hip thrust','kg','glutes,hamstrings*',3,10,2,100,5,120),E('Curl femoral sentado','kg','hamstrings',3,12,1,40,1.25,75),
+      E('Elevación de talones sentado','kg','calves',3,15,1,40,2.5,60)]}
+  ];
+}
+function demoSeed(){
+  if(!cloudState.user){showToast('Inicia sesión primero');return;}
+  if(demoHas()){showToast('Ya hay datos de prueba cargados');return;}
+  if(!confirm('¿Cargar ~9 semanas de datos de prueba (rutina, sesiones, peso corporal, objetivos y notas)? Quedan marcados como prueba y puedes quitarlos después sin tocar tus datos.'))return;
+  let seed=20261007;const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return ((t^t>>>14)>>>0)/4294967296;};
+  const today=new Date();today.setHours(0,0,0,0);
+  const mon0=new Date(today);mon0.setDate(mon0.getDate()-((mon0.getDay()+6)%7)-56);   // Monday, 8 weeks ago
+  const dayOf=(w,d,h,m)=>{const x=new Date(mon0);x.setDate(x.getDate()+w*7+d);x.setHours(h||0,m||0,0,0);return x;};
+  const ymd=d=>ymdOf(d),iso=d=>d.toISOString();
+  const editDate=dayOf(4,2,12),injury=dayOf(6,1),healed=dayOf(8,0),DELOAD=5;
+  const SKIP=new Set(['1:lb','3:la','5:ub','7:lb']);
+  const r5=(v,u,base)=>{const st=u==='lb'?5:u==='kg_db'?1:(base||v)>=40?2.5:1.25;return Math.round(v/st)*st;};   // real plate jumps
+  const tw=(e,w)=>{if(!e.w)return 0;let v=e.w+e.inc*Math.floor(w/2);if(w===DELOAD)v*=0.9;return r5(v,e.unit,e.w);};
+  const tr=(e,w)=>e.w?e.reps:e.reps+Math.floor(w/3);
+  const toRoutine=(version,w)=>({id:'demo-r1',name:DEMO_ROUTINE,icon:'🧪',complexity:2,demo:true,
+    workouts:demoPlan(version).map(wk=>({id:'demo-w-'+wk.key,name:wk.name,exercises:wk.ex.map((e,i)=>({id:'demo-e-'+wk.key+i,name:e.name,meta:'',unit:e.unit,
+      restSeconds:e.rest,muscles:e.muscles,sets:Array.from({length:e.sets},()=>({reps:tr(e,w),rir:e.rir,weight:tw(e,w)}))}))}))});
+  // sessions
+  const sessions=[];
+  for(let w=0;w<9;w++)for(const wk of demoPlan(2)){
+    const start=dayOf(w,wk.day,18,25+Math.floor(rnd()*35));
+    if(start>=today||SKIP.has(w+':'+wk.key))continue;
+    const plan=start<editDate?demoPlan(1).find(x=>x.key===wk.key):wk;
+    let t=start.getTime();const exs=[];
+    plan.ex.forEach((e,ei)=>{
+      const isOHP=/Press militar/.test(e.name);
+      if(isOHP&&w===6)return;                                    // shoulder flare-up: skipped
+      if(/laterales/.test(e.name)&&rnd()<0.22)return;            // sometimes dropped at the end
+      let W=tw(e,w);if(isOHP&&w===7)W=r5(W*0.85,e.unit);
+      const R=tr(e,w),RIR=w===DELOAD?Math.min(10,e.rir+2):e.rir,sets=[];
+      for(let i=0;i<e.sets;i++){
+        t+=(i?e.rest:90)*1000+Math.floor(rnd()*40000);
+        let reps=R;const q=rnd();
+        if(i===e.sets-1&&q<0.35)reps=R-1;else if(q>0.9)reps=R+1;
+        if(ei===0&&wk.key==='ua'&&w>=6&&i>=e.sets-2)reps=R-(i===e.sets-1?2:1);   // bench press stalls late in the cut
+        const rir=Math.max(0,Math.min(10,RIR+(reps<R?-1:reps>R?1:0)));
+        sets.push({setNum:i+1,target:{reps:R,weight:W,rir:RIR},actual:{reps,weight:W,rir},at:new Date(t).toISOString()});
+      }
+      exs.push({exId:'demo-e-'+wk.key+ei,name:e.name,unit:e.unit,muscles:e.muscles,sets});
+    });
+    const end=new Date(t+120000);
+    const vol=Math.round(exs.reduce((a,x)=>a+x.sets.reduce((b,st)=>b+toKg(st.actual.weight,x.unit)*st.actual.reps,0),0));
+    sessions.push({id:'demo-s-'+w+'-'+wk.key,dateISO:iso(end),startedAt:iso(start),routineName:DEMO_ROUTINE,workoutName:wk.name,
+      durationSec:Math.round((end-start)/1000),totalVolumeKg:vol,totalSets:exs.reduce((a,x)=>a+x.sets.length,0),exercises:exs,demo:true});
+  }
+  // body log: 3 weigh-ins a week (cutting ~0.35 kg/week), body fat every 2 weeks, tape every 4 weeks
+  const body=[];
+  for(let w=0;w<9;w++)[0,2,5].forEach(d=>{
+    const day=dayOf(w,d,7,10);if(day>=today)return;const n=w*7+d;
+    const e={id:'demo-b-'+n,date:ymd(day),weightKg:Math.round((82.4-0.05*n+(rnd()-0.5)*0.5)*10)/10,bodyFatPercent:null,bodyFatMethod:null,
+      measurementsCm:{},note:'',createdAt:iso(day),updatedAt:iso(day),demo:true};
+    if(d===0&&w%2===0){e.bodyFatPercent=Math.round((18.6-0.21*w)*10)/10;e.bodyFatMethod='báscula bioimpedancia';}
+    if(d===0&&w%4===0)e.measurementsCm={waist:87-0.32*w,chest:104-0.06*w,arm:37.5-0.03*w,thigh:59-0.12*w,hips:98-0.18*w,neck:39-0.03*w};
+    Object.keys(e.measurementsCm).forEach(k=>{e.measurementsCm[k]=Math.round(e.measurementsCm[k]*10)/10;});
+    body.push(normBodyEntry(e));
+  });
+  const now=iso(new Date()),d0=dayOf(0,0,9);
+  const ago=n=>{const x=new Date(today);x.setDate(x.getDate()+n);return ymd(x);};
+  const goals=[
+    {id:'demo-g0',phase:'bulking',description:'Volumen limpio',startDate:ago(-150),targetDate:null,endDate:ymd(d0),status:'replaced',createdAt:iso(new Date(today.getTime()-150*864e5)),updatedAt:iso(d0),demo:true},
+    {id:'demo-g1',phase:'cutting',description:'Bajar a 15% de grasa manteniendo la fuerza',startDate:ymd(d0),targetDate:ago(28),endDate:null,status:'active',createdAt:iso(d0),updatedAt:iso(d0),demo:true},
+    {id:'demo-g2',phase:null,description:'Press banca 90 kg × 6',startDate:ymd(d0),targetDate:ago(56),endDate:null,status:'active',createdAt:iso(d0),updatedAt:iso(d0),demo:true}];
+  const notes=[
+    {id:'demo-n1',type:'note',date:ymd(dayOf(DELOAD,0)),text:'Semana de descarga: pesos ~10% abajo y RIR +2',resolvedDate:null,createdAt:iso(dayOf(DELOAD,0,20)),updatedAt:iso(dayOf(DELOAD,0,20)),demo:true},
+    {id:'demo-n2',type:'injury',date:ymd(injury),text:'Molestia en hombro derecho al hacer press militar',resolvedDate:healed<today?ymd(healed):null,createdAt:iso(dayOf(6,1,21)),updatedAt:iso(healed<today?healed:dayOf(6,1,21)),demo:true},
+    {id:'demo-n3',type:'note',date:ymd(dayOf(7,2)),text:'Dormí mal toda la semana, rendimiento bajo',resolvedDate:null,createdAt:iso(dayOf(7,2,22)),updatedAt:iso(dayOf(7,2,22)),demo:true},
+    {id:'demo-n4',type:'injury',date:ago(-4),text:'Leve molestia en rodilla izquierda en sentadilla búlgara',resolvedDate:null,createdAt:iso(new Date(today.getTime()-4*864e5)),updatedAt:iso(new Date(today.getTime()-4*864e5)),demo:true}];
+  const rh=[
+    {id:'demo-rh1',routineId:'demo-r1',name:DEMO_ROUTINE,action:'created',date:ymd(d0),createdAt:iso(d0),updatedAt:iso(d0),routine:toRoutine(1,0),demo:true},
+    {id:'demo-rh2',routineId:'demo-r1',name:DEMO_ROUTINE,action:'edited',date:ymd(editDate),createdAt:iso(editDate),updatedAt:iso(editDate),routine:toRoutine(2,4),demo:true}];
+  // write through the normal save paths (device + cloud, merged)
+  listSave('routineHistory',listLoad('routineHistory').concat(rh));
+  routines.push(toRoutine(2,8));saveRoutines();
+  saveJournal(loadJournal().concat(sessions).sort((a,b)=>String(b.dateISO).localeCompare(String(a.dateISO))));
+  const bl=loadBodyLog(),taken=new Set(bl.map(e=>e.date));saveBodyLog(bl.concat(body.filter(e=>!taken.has(e.date))));
+  listSave('goals',listLoad('goals').concat(goals));
+  listSave('notes',listLoad('notes').concat(notes));
+  const g=loadGoals();g[DEMO_ROUTINE+'::Upper A::Press banca con barra']={startWeight:77.5,targetWeight:90,startISO:iso(d0),deadlineISO:iso(new Date(today.getTime()+56*864e5)),demo:true};saveGoals(g);
+  // coach profile: filled only when it is still empty, so a real one is never overwritten
+  if(coachState.status==='ready'&&window.Cloud&&window.Cloud.saveCoachProfile){
+    const c=normCoach(coachState.data);
+    if(!c.goal.phase&&!c.availability.daysPerWeek){
+      const data=normCoach(Object.assign({},c,{goal:{phase:'cutting',aestheticGoal:'hombros más anchos y cintura marcada',priorityMuscles:['shoulders','lats']},
+        experience:'intermedio, 3 años',availability:{daysPerWeek:4,sessionMinutes:75},equipment:'gimnasio completo',
+        preferences:{liked:['press banca','dominadas'],avoided:['sentadilla frontal']},nutrition:{calories:2300,proteinG:170}}));
+      window.Cloud.saveCoachProfile(cloudState.user.uid,data).then(()=>{coachState={status:'ready',data};markSynced('coachProfile');profileSnapshot('coach');renderProfile();}).catch(()=>{});
+    }
+  }
+  renderRM();renderProfile();if(typeof rfSync==='function')rfSync();
+  showToast('Datos de prueba cargados · '+sessions.length+' sesiones');
+}
+/* read cloud → merge → drop matching items → write both (removal can't go through the additive merge) */
+async function purgeList(name,pred){
+  const cfg=SYNC_LISTS[name],uidAt=cloudState.user.uid;
+  clearTimeout(_syncTimers[name]);
+  let cloud;try{cloud=await window.Cloud.getData(uidAt,name);}catch(e){return false;}
+  const cl=cloud&&Array.isArray(cloud.value)?cloud.value:[];
+  const merged=mergeById(cl,listLoad(name)).filter(x=>!pred(x));
+  if(cfg.sort)merged.sort(cfg.sort);
+  localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
+  try{await window.Cloud.setData(uidAt,name,merged,(cloud&&cloud.wipedAt)||localStorage.getItem(aKey(cfg.key+'_wiped'))||null);markSynced(name);}catch(e){return false;}
+  return true;
+}
+async function demoRemove(){
+  if(!cloudState.user)return;
+  if(!confirm('¿Quitar todos los datos de prueba? Tus datos reales no se tocan.'))return;
+  routines=routines.filter(r=>!isDemo(r));saveRoutines();
+  for(const n of ['journal','goals','notes','routineHistory']){
+    if(!(await purgeList(n,isDemo))){showToast('Sin conexión: no se pudo quitar todo, intenta de nuevo');renderRM();return;}
+  }
+  saveBodyLog(loadBodyLog().filter(e=>!isDemo(e)));
+  const g=loadGoals();Object.keys(g).forEach(k=>{if(g[k]&&g[k].demo)delete g[k];});saveGoals(g);
+  renderRM();renderProfile();if(typeof rfSync==='function')rfSync();
+  showToast('Datos de prueba eliminados');
 }
 
 /* ══════════════════════════════════════

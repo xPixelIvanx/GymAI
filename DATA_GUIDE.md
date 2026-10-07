@@ -296,7 +296,26 @@ Es un resumen, no todo el historial: unos 25 KB con varias semanas de datos. Se 
   - Es solo lectura.
   - Para quitarlo, borra el bloque `INSPECTION MODE (temporary)` de `HTML/index.html`, la entrada `inspect:viewInspect` en `renderRM()` y el botón «Modo inspección» en `viewData()`.
 
-## 9. Límites conocidos
+## 9. Datos de prueba
+
+En Routine Manager ▸ 🗄 Datos ▸ **🧪 Cargar datos de prueba** se agregan a la cuenta unas 9 semanas de historial realista. Sirven para probar la Skill sin tener que entrenar semanas:
+
+- **Rutina** `Upper/Lower Hipertrofia (demo)`: 4 días por semana. Hay ejercicios en `kg`, `kg_db` y `lb`.
+- **Cambio de rutina:** a la mitad del periodo, «Extensión de cuádriceps» se reemplaza por «Sentadilla búlgara». Así se prueba `planSource: "routineHistory"`.
+- **Unas 31 sesiones**, con:
+  - progresión de cargas cada 2 semanas;
+  - una semana de descarga (pesos −10 %, RIR +2);
+  - un estancamiento en press banca al final;
+  - ejercicios saltados (press militar durante una molestia de hombro, laterales a veces);
+  - 4 sesiones no hechas, para que la adherencia quede cerca del 86 %.
+- **Registro corporal:** 3 pesajes por semana en déficit (≈ −0.35 kg/semana), % de grasa cada 2 semanas y medidas cada 4.
+- **Objetivos:** «Volumen» cerrado como `replaced`, «Definición» vigente y una meta de press banca, más una meta por ejercicio.
+- **Lesiones y notas:** hombro (ya resuelta), rodilla (activa), la nota de la semana de descarga y una de mal sueño.
+- **Perfil del coach:** se llena solo si estaba vacío. Queda en `cutting`, 4 días/semana y 2300 kcal / 170 g de proteína.
+
+Todo lo agregado lleva `demo: true` o un `id` que empieza con `demo-`. El botón **✕ Quitar datos de prueba** borra exactamente eso, en el dispositivo y en la nube, sin tocar los datos reales. El perfil del coach se queda como esté.
+
+## 10. Límites conocidos
 
 - `data/journal` es un solo documento. Con unos cientos de sesiones se acercará al límite de 1 MiB de Firestore. Si pasa, habrá que repartir el journal en varios documentos.
 - Las sesiones anteriores a esta versión no tienen `startedAt` ni `at` por serie.
