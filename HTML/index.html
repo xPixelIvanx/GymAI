@@ -6888,15 +6888,14 @@ function exportCoachReport(){
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
    ║  § 10 · AJUSTES Y MANTENIMIENTO
-   ║  Pantalla Datos: borrado por categoría y respaldo.
+   ║  Pantalla Datos (uso normal): informe para el coach y respaldo. Lo temporal está en § 11.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
 /* ══════════════════════════════════════
-   DATOS — clear test data by category (this account only: device + cloud).
-   Shows counts, offers a JSON backup and requires typing BORRAR.
-   Routines are only removed by their own separate option.
+   DATOS — pantalla de datos (uso normal) y catálogo de lo que se guarda.
+   DATA_PARTS / DATA_CATS describen cada tipo de dato (cuántos hay, cómo respaldarlo y cómo borrarlo);
+   los usan el respaldo (aquí) y las herramientas de borrado (§ 11).
 ══════════════════════════════════════ */
-function wipeList(name){listMarkWiped(name);localStorage.setItem(aKey(SYNC_LISTS[name].key),'[]');return syncList(name);}
 const DATA_PARTS={
   journal:{label:'sesiones',count:()=>loadJournal().length,get:()=>loadJournal(),wipe:()=>wipeList('journal')},
   bodyLog:{label:'registros de peso, % grasa y medidas',count:()=>loadBodyLog().length,get:()=>loadBodyLog(),wipe:()=>saveBodyLog([])},
@@ -6920,9 +6919,41 @@ const DATA_CATS={
 };
 let dataCat=null;
 function rmGoData(){dataCat=null;rmView='data';renderRM();}
-function dataPick(k){dataCat=k;renderRM();}
 function viewData(){
   if(dataCat&&DATA_CATS[dataCat])return viewDataConfirm();
+  return `
+    <div class="rm-crumb">LIBRARY / DATOS</div>
+    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
+    <div class="rm-title">Datos 🗄</div>
+    <div class="rm-subtitle">Exporta tu información y haz un respaldo de tus datos.</div>
+    <div class="section-label">Exportar y respaldo</div>
+    <div class="rm-toolbar">
+      <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
+      <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
+    </div>
+    ${viewDataTools()}`;
+}
+function dataBackup(cat){
+  const parts=cat==='all'?Object.keys(DATA_PARTS):DATA_CATS[cat].parts,data={};
+  parts.forEach(p=>{data[p]=DATA_PARTS[p].get();});
+  if(cat==='all'){data.profile=loadProfile();data.coachProfile=coachState.status==='ready'?coachState.data:null;}
+  downloadFile('gymai-respaldo-'+cat+'-'+todayStr()+'.json',JSON.stringify({app:'GymAI',type:'dataBackup',category:cat,createdAt:new Date().toISOString(),data},null,1));
+  showToast('Respaldo descargado');
+}
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 11 · HERRAMIENTAS (temporales)
+   ║  Todo lo temporal, dentro de Datos ▸ Herramientas: borrar datos, datos de prueba y modo inspección. Pensado para quitarse fácil.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+/* ══════════════════════════════════════
+   BORRAR DATOS — clear data by category (this account only: device + cloud).
+   Shows counts, offers a JSON backup and requires typing BORRAR.
+   Routines are only removed by their own separate option.
+   The catalog it works on (DATA_PARTS / DATA_CATS) lives in § 10 and is shared with the backup.
+══════════════════════════════════════ */
+function wipeList(name){listMarkWiped(name);localStorage.setItem(aKey(SYNC_LISTS[name].key),'[]');return syncList(name);}
+function viewDataTools(){
   const cards=Object.entries(DATA_CATS).map(([k,c])=>{
     const tags=c.parts.map(p=>`<span class="rm-tag">${DATA_PARTS[p].count()} ${DATA_PARTS[p].label}</span>`).join('');
     return `<div class="rm-card">
@@ -6934,23 +6965,23 @@ function viewData(){
     </div>`;
   }).join('');
   return `
-    <div class="rm-crumb">LIBRARY / DATOS</div>
-    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
-    <div class="rm-title">Datos 🗄</div>
-    <div class="rm-subtitle">Limpia tus datos de prueba. Solo afecta a tu cuenta (este dispositivo y tu nube). Tus rutinas no se tocan salvo que elijas «Mis rutinas».</div>
-    <div class="rm-toolbar">
-      <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
-      <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
-      ${demoHas()?`<button class="rm-btn ghost" onclick="demoSeed()">↻ Recargar datos de prueba</button><button class="rm-btn danger" onclick="demoRemove()">✕ Quitar datos de prueba</button>`:`<button class="rm-btn ghost" onclick="demoSeed()">🧪 Cargar datos de prueba</button>`}
-      <div class="spacer"></div>
-      <button class="rm-btn ghost" onclick="rmGoInspect()">🔍 Modo inspección</button>
-    </div>
-    <div class="rm-grid">${cards}</div>`;
+    <div style="margin-top:34px;padding-top:22px;border-top:1px solid var(--border)">
+      <div class="section-label">Herramientas</div>
+      <div class="bl-hint" style="margin:0 0 14px">Para pruebas y mantenimiento. Solo afecta a tu cuenta (este dispositivo y tu nube). Tus rutinas no se tocan salvo que elijas «Mis rutinas».</div>
+      <div class="rm-toolbar">
+        ${demoHas()?`<button class="rm-btn ghost" onclick="demoSeed()">↻ Recargar datos de prueba</button><button class="rm-btn danger" onclick="demoRemove()">✕ Quitar datos de prueba</button>`:`<button class="rm-btn ghost" onclick="demoSeed()">🧪 Cargar datos de prueba</button>`}
+        <div class="spacer"></div>
+        <button class="rm-btn ghost" onclick="rmGoInspect()">🔍 Modo inspección</button>
+      </div>
+      <div class="bl-sec">Borrar datos</div>
+      <div class="rm-grid">${cards}</div>
+    </div>`;
 }
+function dataPick(k){dataCat=k;renderRM();}
 function viewDataConfirm(){
   const c=DATA_CATS[dataCat],rows=c.parts.map(p=>({p,n:DATA_PARTS[p].count()})),total=rows.reduce((a,r)=>a+r.n,0);
   return `
-    <div class="rm-crumb">LIBRARY / DATOS / BORRAR</div>
+    <div class="rm-crumb">LIBRARY / DATOS / HERRAMIENTAS / BORRAR</div>
     <button class="rm-back" onclick="dataPick(null)">‹ Datos</button>
     <div class="rm-title">${c.ico} Borrar: ${c.label}</div>
     <div class="rm-subtitle">Se borra en este dispositivo y en tu nube. No se puede deshacer.</div>
@@ -6963,13 +6994,6 @@ function viewDataConfirm(){
         <input id="data-confirm" class="crew-input" autocomplete="off" autocapitalize="characters" placeholder="BORRAR" oninput="document.getElementById('data-go').disabled=this.value.trim()!=='BORRAR'"></div>
       <button id="data-go" class="rm-btn danger" style="width:100%;margin-top:8px" disabled onclick="dataWipe()">🗑 Borrar definitivamente</button>
     </div>`;
-}
-function dataBackup(cat){
-  const parts=cat==='all'?Object.keys(DATA_PARTS):DATA_CATS[cat].parts,data={};
-  parts.forEach(p=>{data[p]=DATA_PARTS[p].get();});
-  if(cat==='all'){data.profile=loadProfile();data.coachProfile=coachState.status==='ready'?coachState.data:null;}
-  downloadFile('gymai-respaldo-'+cat+'-'+todayStr()+'.json',JSON.stringify({app:'GymAI',type:'dataBackup',category:cat,createdAt:new Date().toISOString(),data},null,1));
-  showToast('Respaldo descargado');
 }
 async function dataWipe(){
   const inp=document.getElementById('data-confirm');
@@ -6985,15 +7009,11 @@ async function dataWipe(){
   showToast(c.label+': borrado');
 }
 
-/* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 11 · HERRAMIENTAS (temporales)
-   ║  Datos de prueba y modo inspección. Pensado para quitarse fácil.
-   ╚══════════════════════════════════════════════════════════════════════╝ */
 
 
 /* ══════════════════════════════════════
    DEMO DATA — ~9 weeks of realistic history to try the coach Skill
-   (Datos ▸ Cargar datos de prueba). Everything added is tagged demo:true /
+   (Datos ▸ Herramientas ▸ Cargar datos de prueba). Everything added is tagged demo:true /
    id "demo-…", so «Quitar datos de prueba» removes exactly that and never
    touches your own records. Deterministic (seeded) so reports are reproducible.
 ══════════════════════════════════════ */
@@ -7146,7 +7166,7 @@ async function demoRemove(quiet){
 /* ══════════════════════════════════════
    INSPECTION MODE (temporary) — read-only check that everything is being saved.
    To remove: delete this block, the `inspect:viewInspect` entry in renderRM()
-   and the «Modo inspección» button in viewData().
+   and the «Modo inspección» button in viewDataTools().
 ══════════════════════════════════════ */
 function rmGoInspect(){rmView='inspect';renderRM();}
 function viewInspect(){
@@ -7189,7 +7209,7 @@ function viewInspect(){
       ${c.rows.length?c.rows.map(r=>`<div class="jr-set-line" style="grid-template-columns:118px 1fr"><span>${esc(r[0]||'—')}</span><span>${r[1]}</span></div>`).join(''):'<div class="bl-hint" style="margin:0">Sin registros.</div>'}
     </div>`).join('');
   return `
-    <div class="rm-crumb">LIBRARY / DATOS / INSPECCIÓN</div>
+    <div class="rm-crumb">LIBRARY / DATOS / HERRAMIENTAS / INSPECCIÓN</div>
     <button class="rm-back" onclick="rmGoData()">‹ Datos</button>
     <div class="rm-title">Modo inspección 🔍</div>
     <div class="rm-subtitle">Conteo y últimos 5 registros de cada tipo. «Nube» es la última vez que se guardó correctamente en tu cuenta.</div>
