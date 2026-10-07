@@ -2130,7 +2130,7 @@ const SYNC_LISTS={
   goals:{key:'gymAI_hist_goals_v1',dateOf:x=>x.addedAt||x.createdAt},
   notes:{key:'gymAI_hist_notes_v1',dateOf:x=>x.addedAt||x.createdAt},
   routineHistory:{key:'gymAI_hist_routines_v1',dateOf:x=>x.addedAt||x.createdAt},
-  programs:{key:'gymAI_hist_programs_v1',dateOf:x=>x.addedAt||x.createdAt}
+  programs:{key:'gymAI_hist_programs_v1',dateOf:x=>x.addedAt||x.createdAt,merge:mergeProgram}
 };
 /* wipedAt drops records ADDED before the wipe. addedAt = when the record entered the app; legacy
    records without it fall back to their own date. Backdated records added after a wipe (demo
@@ -2140,10 +2140,40 @@ function listLoad(name){try{const a=JSON.parse(localStorage.getItem(aKey(SYNC_LI
 function listLive(name){return listLoad(name).filter(x=>x&&!x.deletedAt);}
 function listSave(name,list){localStorage.setItem(aKey(SYNC_LISTS[name].key),JSON.stringify(list));scheduleSync(name);}
 function listMarkWiped(name){localStorage.setItem(aKey(SYNC_LISTS[name].key+'_wiped'),new Date().toISOString());}
-function mergeById(a,b){
+/* newest record wins; mergeFn(winner, other) lets a list keep what only the other side has (programs) */
+function mergeById(a,b,mergeFn){
   const m=new Map(),ts=x=>String(x.updatedAt||x.createdAt||'');
-  a.concat(b).forEach(x=>{if(!x||!x.id)return;const o=m.get(x.id);if(!o||ts(x)>ts(o))m.set(x.id,x);});
+  a.concat(b).forEach(x=>{if(!x||!x.id)return;const o=m.get(x.id);
+    if(!o)m.set(x.id,x);
+    else{const win=ts(x)>ts(o)?x:o,lose=win===x?o:x;m.set(x.id,mergeFn?mergeFn(win,lose):win);}});
   return [...m.values()];
+}
+/* Two devices edited the same program: fields come from the newest edit, but the lists that only grow
+   (adjustments, nutrition.history, checkpoints) keep what either device added. */
+function pgUnion(w,l,key){   // multiset union: the winner's list, plus what only the other side has, placed by date
+  const out=(w||[]).slice(),have={};out.forEach(x=>{const k=key(x);have[k]=(have[k]||0)+1;});
+  const seen={};
+  (l||[]).forEach(x=>{const k=key(x);seen[k]=(seen[k]||0)+1;if(seen[k]<=(have[k]||0))return;
+    let i=out.length;while(i>0&&String(out[i-1].date)>String(x.date))i--;out.splice(i,0,x);});
+  return out;
+}
+function pgMergeCheckpoints(a,b){   // same date+type+note = same checkpoint; it counts as done if either side did it
+  const out=[],pos={},id=c=>stableStr([c.date,c.type,c.note||'']);
+  const add=(c,side)=>{const k=id(c),cnt=pos[k+'|'+side]=(pos[k+'|'+side]||0)+1,pk=k+'#'+cnt;
+    if(pk in pos){const e=out[pos[pk]];if(c.doneDate&&(!e.doneDate||c.doneDate<e.doneDate))e.doneDate=c.doneDate;}
+    else{pos[pk]=out.length;out.push(Object.assign({},c));}};
+  (a||[]).forEach(c=>add(c,'a'));(b||[]).forEach(c=>add(c,'b'));
+  return out;
+}
+function mergeProgram(w,l){
+  const r=Object.assign({},w),wn=w.nutrition||{},ln=l.nutrition||{};
+  r.adjustments=pgUnion(w.adjustments,l.adjustments,a=>stableStr([a.date,a.change,a.reason||'',a.source]));
+  const hist=pgUnion(wn.history,ln.history,h=>stableStr([h.date,h.calories,h.proteinG,h.fatMinG,h.reason||'']));
+  r.nutrition=Object.assign({},wn,{history:hist});
+  if(hist.length>(wn.history||[]).length){const last=hist[hist.length-1];   // the current values are the newest entry's
+    r.nutrition.calories=last.calories;r.nutrition.proteinG=last.proteinG;r.nutrition.fatMinG=last.fatMinG;}
+  r.checkpoints=pgMergeCheckpoints(w.checkpoints,l.checkpoints);
+  return r;
 }
 const LASTSYNC_KEY='gymAI_lastsync_v1';
 function lastSynced(){try{return JSON.parse(localStorage.getItem(aKey(LASTSYNC_KEY))||'{}')||{};}catch(e){return {};}}
@@ -2159,7 +2189,7 @@ async function syncList(name){
   const wk=aKey(cfg.key+'_wiped');
   const wiped=[(cloud&&cloud.wipedAt)||'',localStorage.getItem(wk)||''].sort().pop();
   const cl=cloud&&Array.isArray(cloud.value)?cloud.value:[];
-  let merged=mergeById(cl,listLoad(name));
+  let merged=mergeById(cl,listLoad(name),cfg.merge);
   if(wiped){merged=merged.filter(x=>String(cfg.dateOf(x)||'')>wiped);localStorage.setItem(wk,wiped);}
   if(cfg.sort)merged.sort(cfg.sort);
   localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
