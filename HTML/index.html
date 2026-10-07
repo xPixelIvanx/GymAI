@@ -1781,6 +1781,12 @@ input,select,textarea{transition:border-color .2s ease,background-color .2s ease
 
 <script>
 "use strict";
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 1 · NÚCLEO
+   ║  Utilidades generales (texto, fechas, unidades), navegación entre pestañas, avisos y ventanas.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
 /* ══════════════════════════════════════
    GENERAL HELPERS
 ══════════════════════════════════════ */
@@ -1821,6 +1827,65 @@ function switchTab(tab){
   if(tab==='leaderboard'&&typeof renderCrew==='function')renderCrew();
   if(window.fxEnter)fxEnter(document.getElementById('tab-'+tab));
 }
+
+function fmtDate(iso,withTime){
+  const d=new Date(iso);
+  const ds=d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'});
+  return withTime?`${ds} · ${d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}`:ds;
+}
+function fmtClock(s){s=Math.max(0,s);const m=Math.floor(s/60).toString().padStart(2,'0');const ss=(s%60).toString().padStart(2,'0');return `${m}:${ss}`;}
+
+/* ══════════════════════════════════════
+   TOAST
+══════════════════════════════════════ */
+let toastTimeout;
+function showToast(msg){
+  clearTimeout(toastTimeout);
+  document.getElementById('toast-msg').textContent=msg;
+  document.getElementById('toast').classList.add('show');
+  toastTimeout=setTimeout(()=>document.getElementById('toast').classList.remove('show'),2800);
+}
+
+/* ══════════════════════════════════════
+   MODAL HELPERS
+══════════════════════════════════════ */
+function openModal(id){document.getElementById(id).classList.add('show');}
+function closeModal(id){document.getElementById(id).classList.remove('show');}
+function b64(s){return btoa(unescape(encodeURIComponent(s)));}
+function unb64(s){return decodeURIComponent(escape(atob(s)));}
+
+function downloadFile(name,content,type){
+  const blob=new Blob([content],{type:type||'application/json'});
+  const url=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+function safeName(s){return String(s).replace(/[^\w\-]+/g,'_').slice(0,40)||'gymai';}
+function ymdOf(d){d=new Date(d);return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
+function weekStartOf(d){d=new Date(d);d.setHours(0,0,0,0);d.setDate(d.getDate()-((d.getDay()+6)%7));return ymdOf(d);}   // Monday
+function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+function avg(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0;}
+function round1(w){return Math.round(w*10)/10;}
+function pad2(n){return String(n).padStart(2,'0');}
+function todayStr(){const d=new Date();return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
+function validYMD(s){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s||''))return false;
+  const [y,m,d]=s.split('-').map(Number),t=new Date(y,m-1,d);
+  return t.getFullYear()===y&&t.getMonth()===m-1&&t.getDate()===d;
+}
+/* "YYYY-MM-DD" is a calendar date, not an instant: build it in local time
+   (new Date('2026-10-06') is UTC and shows the previous day west of UTC) */
+function fmtBodyDate(ymd,withYear){
+  if(!validYMD(ymd))return ymd||'';
+  const [y,m,d]=ymd.split('-').map(Number);
+  return new Date(y,m-1,d).toLocaleDateString(undefined,withYear===false?{day:'2-digit',month:'short'}:{day:'2-digit',month:'short',year:'numeric'});
+}
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 2 · DATOS Y SINCRONIZACIÓN
+   ║  Claves de almacenamiento por cuenta, limpieza de datos, rutinas y journal en el dispositivo, historiales de solo agregar, sincronización con Firestore y arranque de sesión.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
 
 /* ══════════════════════════════════════
    ROUTINE DATA MODEL (localStorage)
@@ -2047,6 +2112,196 @@ const RX_SET_TYPES={
   cluster:{label:'Cluster',cls:'cluster'}
 };
 function rxSetType(s){return (s&&s.type&&RX_SET_TYPES[s.type])?s.type:'working';}
+
+/* ══════════════════════════════════════
+   APPEND-ONLY HISTORY — users/{uid}/data/{name} = {payload, wipedAt, updatedAt}
+   Records are added, never overwritten: each has id + createdAt/updatedAt and
+   a removal is a tombstone (deletedAt). syncList() reads the cloud copy, merges
+   it with the device copy by id (newest updatedAt wins) and writes both, so an
+   offline save is never lost and a failed read never erases the cloud.
+   wipedAt (set by an explicit "clear") drops everything dated before it.
+══════════════════════════════════════ */
+const SYNC_LISTS={
+  journal:{key:JKEY,dateOf:e=>e.addedAt||e.dateISO,sort:(a,b)=>String(b.dateISO||'').localeCompare(String(a.dateISO||''))},
+  profileHistory:{key:'gymAI_hist_profile_v1',dateOf:x=>x.addedAt||x.createdAt},
+  goals:{key:'gymAI_hist_goals_v1',dateOf:x=>x.addedAt||x.createdAt},
+  notes:{key:'gymAI_hist_notes_v1',dateOf:x=>x.addedAt||x.createdAt},
+  routineHistory:{key:'gymAI_hist_routines_v1',dateOf:x=>x.addedAt||x.createdAt}
+};
+/* wipedAt drops records ADDED before the wipe. addedAt = when the record entered the app; legacy
+   records without it fall back to their own date. Backdated records added after a wipe (demo
+   data, imports) must carry addedAt = now, or the wipe would swallow them. */
+function stableStr(o){return JSON.stringify(o,(k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.keys(v).sort().reduce((r,x)=>(r[x]=v[x],r),{}):v);}
+function listLoad(name){try{const a=JSON.parse(localStorage.getItem(aKey(SYNC_LISTS[name].key))||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
+function listLive(name){return listLoad(name).filter(x=>x&&!x.deletedAt);}
+function listSave(name,list){localStorage.setItem(aKey(SYNC_LISTS[name].key),JSON.stringify(list));scheduleSync(name);}
+function listMarkWiped(name){localStorage.setItem(aKey(SYNC_LISTS[name].key+'_wiped'),new Date().toISOString());}
+function mergeById(a,b){
+  const m=new Map(),ts=x=>String(x.updatedAt||x.createdAt||'');
+  a.concat(b).forEach(x=>{if(!x||!x.id)return;const o=m.get(x.id);if(!o||ts(x)>ts(o))m.set(x.id,x);});
+  return [...m.values()];
+}
+const LASTSYNC_KEY='gymAI_lastsync_v1';
+function lastSynced(){try{return JSON.parse(localStorage.getItem(aKey(LASTSYNC_KEY))||'{}')||{};}catch(e){return {};}}
+function markSynced(name){const m=lastSynced();m[name]=new Date().toISOString();localStorage.setItem(aKey(LASTSYNC_KEY),JSON.stringify(m));}
+const _syncTimers={};
+function scheduleSync(name,ms){clearTimeout(_syncTimers[name]);_syncTimers[name]=setTimeout(()=>{syncList(name);},ms==null?1200:ms);}
+async function syncList(name){
+  if(!(window.Cloud&&window.Cloud.getData&&cloudState.user))return;
+  const cfg=SYNC_LISTS[name],uidAt=cloudState.user.uid;
+  let cloud;
+  try{cloud=await window.Cloud.getData(uidAt,name);}catch(e){console.warn('[Sync] read failed',name,e);return;}
+  if(!cloudState.user||cloudState.user.uid!==uidAt)return;   // account switched meanwhile
+  const wk=aKey(cfg.key+'_wiped');
+  const wiped=[(cloud&&cloud.wipedAt)||'',localStorage.getItem(wk)||''].sort().pop();
+  const cl=cloud&&Array.isArray(cloud.value)?cloud.value:[];
+  let merged=mergeById(cl,listLoad(name));
+  if(wiped){merged=merged.filter(x=>String(cfg.dateOf(x)||'')>wiped);localStorage.setItem(wk,wiped);}
+  if(cfg.sort)merged.sort(cfg.sort);
+  localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
+  if(!cloud||JSON.stringify(cl)!==JSON.stringify(merged)||(cloud.wipedAt||'')!==wiped){
+    try{await window.Cloud.setData(uidAt,name,merged,wiped||null);}catch(e){console.warn('[Sync] write failed',name,e);return;}
+  }
+  markSynced(name);
+}
+
+/* ---- dated versions of the athlete profile and the coach profile ---- */
+function profileSnapshot(source){
+  let data;
+  if(source==='coach'){if(coachState.status!=='ready')return;data=normCoach(coachState.data);}
+  else{const p=loadProfile();if(!p)return;data=Object.assign({},p);delete data.photo;}
+  const list=listLoad('profileHistory');
+  const last=list.filter(x=>x.source===source&&!x.deletedAt).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).pop();
+  if(last&&stableStr(last.data)===stableStr(data))return;
+  const now=new Date().toISOString();
+  list.push({id:uid(),source,createdAt:now,updatedAt:now,data});
+  listSave('profileHistory',list);
+}
+
+/* ---- routine changes: one snapshot per routine per day it changes ---- */
+function routineHistoryTrack(){
+  let signed=false;try{signed=!!cloudState.user;}catch(e){}
+  if(!signed||!Array.isArray(routines))return;
+  const list=listLoad('routineHistory'),now=new Date().toISOString(),today=todayStr(),first=!list.length,last={};
+  list.forEach(h=>{if(!last[h.routineId]||String(h.createdAt)>String(last[h.routineId].createdAt))last[h.routineId]=h;});
+  let changed=false;
+  const add=(r,action)=>{list.push({id:uid(),routineId:r.id,name:r.name,action,date:today,createdAt:now,updatedAt:now,
+    routine:action==='deleted'?null:JSON.parse(JSON.stringify(r))});changed=true;};
+  routines.forEach(r=>{
+    if(!r||!r.id)return;
+    const h=last[r.id];
+    if(!h||h.action==='deleted'){add(r,first?'snapshot':'created');return;}
+    if(h.routine&&stableStr(h.routine)===stableStr(r))return;
+    if(h.date===today){h.routine=JSON.parse(JSON.stringify(r));h.name=r.name;h.updatedAt=now;changed=true;return;}
+    add(r,'edited');
+  });
+  const ids=new Set(routines.map(r=>r&&r.id));
+  Object.values(last).forEach(h=>{if(!ids.has(h.routineId)&&h.action!=='deleted')add({id:h.routineId,name:h.name},'deleted');});
+  if(!changed)return;
+  routineHistoryTrim(list);
+  listSave('routineHistory',list);
+}
+/* Firestore caps a document at 1 MiB: past ~700 KB the oldest snapshots keep
+   their change record (date, action, name) but drop the full routine body */
+function routineHistoryTrim(list){
+  const MAX=700000;let size=JSON.stringify(list).length;if(size<=MAX)return;
+  const latest={};list.forEach(h=>{if(!latest[h.routineId]||String(h.createdAt)>String(latest[h.routineId].createdAt))latest[h.routineId]=h;});
+  const keep=new Set(Object.values(latest)),now=new Date().toISOString();
+  list.slice().sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).some(h=>{
+    if(keep.has(h)||!h.routine)return false;
+    size-=JSON.stringify(h.routine).length;h.routine=null;h.trimmed=true;h.updatedAt=now;
+    return size<=MAX;
+  });
+}
+
+let cloudState={ready:false,available:false,user:null,crewId:null,crewName:'',members:[],unsub:null,
+  friendships:[],friendPubs:{},unsubFriends:null,lbMode:'friends',
+  crewInvites:[],unsubCrewInvites:null,
+  notifs:[],unsubNotifs:null};
+/* back up the full profile to the account (portable across devices) */
+function cloudPushProfile(){
+  if(window.Cloud&&window.Cloud.saveProfile&&cloudState.user){
+    const p=loadProfile(); if(p) try{ window.Cloud.saveProfile(cloudState.user.uid,p).then(()=>markSynced('profile')).catch(()=>{}); }catch(e){}
+  }
+}
+/* back up muscle PRs to the account */
+function cloudPushMusclePRs(){
+  if(window.Cloud&&window.Cloud.saveMusclePRs&&cloudState.user){
+    try{ window.Cloud.saveMusclePRs(cloudState.user.uid,loadMPRs()).catch(()=>{}); }catch(e){}
+  }
+}
+function cloudPushRoutines(){
+  if(window.Cloud&&window.Cloud.saveRoutines&&cloudState.user){
+    try{ window.Cloud.saveRoutines(cloudState.user.uid,routines).then(()=>markSynced('routines')).catch(()=>{}); }catch(e){}
+  }
+}
+function cloudPushJournal(){if(cloudState.user)scheduleSync('journal',300);}
+
+window.addEventListener('cloud-ready',e=>{cloudState.ready=true;cloudState.available=!!(e.detail&&e.detail.available);renderCrew();});
+window.addEventListener('cloud-auth',async e=>{
+  cloudState.ready=true; cloudState.user=e.detail; cloudState.crewId=e.detail?e.detail.crewId:null;
+  profileForceAuth=false;
+  if(cloudState.unsub){try{cloudState.unsub();}catch(_){}cloudState.unsub=null;}
+  cloudState.members=[];
+  if(cloudState.unsubFriends){try{cloudState.unsubFriends();}catch(_){}cloudState.unsubFriends=null;}
+  if(cloudState.unsubCrewInvites){try{cloudState.unsubCrewInvites();}catch(_){}cloudState.unsubCrewInvites=null;}
+  cloudState.friendships=[]; cloudState.friendPubs={}; cloudState.crewInvites=[];
+  coachState={status:'idle',data:null};   // cloud-only: never carried across accounts
+  if(cloudState.user){
+    const uid=cloudState.user.uid;
+    _profileHydrating=true;
+    renderProfile();
+    // always hydrate from Firebase — cloud is the source of truth
+    if(window.Cloud&&window.Cloud.getProfile){
+      try{ const cp=await window.Cloud.getProfile(uid); if(cp)saveProfileData(cp); }catch(_){}
+    }
+    if(window.Cloud&&window.Cloud.getMusclePRs){
+      try{ const mp=await window.Cloud.getMusclePRs(uid); if(mp&&Object.keys(mp).length)saveMPRs(mp); }catch(_){}
+    }
+    if(window.Cloud&&window.Cloud.getRoutines){
+      try{ const cr=await window.Cloud.getRoutines(uid); if(cr&&cr.length){localStorage.setItem(aKey(RKEY),JSON.stringify(cr));} }catch(_){}
+    }
+    routines=loadRoutines();
+    {const rr=localStorage.getItem(aKey(RKEY));if(!rr||rr==='[]')localStorage.setItem(aKey(RKEY),JSON.stringify(routines));}   // keep seeded ids stable across reloads
+    // sessions + append-only histories: device and cloud copies are merged, never replaced
+    for(const name of Object.keys(SYNC_LISTS))await syncList(name);
+    if(window.Cloud&&window.Cloud.getData){
+      try{
+        const cg=await window.Cloud.getData(uid,'exerciseGoals');
+        if(localStorage.getItem(aKey(RGDIRTY)))await cloudPushExGoals();              // unsynced local edits win
+        else if(cg&&cg.value&&typeof cg.value==='object')localStorage.setItem(aKey(RGKEY),JSON.stringify(cg.value));
+        else if(Object.keys(loadGoals()).length)await cloudPushExGoals();             // no cloud doc yet → seed it
+      }catch(_){}
+    }
+    if(window.Cloud&&window.Cloud.getBodyLog){
+      try{
+        const cb=await window.Cloud.getBodyLog(uid);
+        if(localStorage.getItem(aKey(BLDIRTY)))await cloudPushBodyLog();      // unsynced local edits win
+        else if(Array.isArray(cb))localStorage.setItem(aKey(BLKEY),JSON.stringify(cb));
+        else if(loadBodyLog().length)await cloudPushBodyLog();                 // no cloud doc yet → seed it
+      }catch(_){}                                                              // read failed → keep local, push nothing
+    }
+    await coachLoad();
+    profileSnapshot('profile');profileSnapshot('coach');routineHistoryTrack();   // first version of what already exists
+    _profileHydrating=false;
+    if(loadProfile())cloudSyncMe();
+    cloudPushRoutines();
+    if(cloudState.crewId)cloudSubscribe();
+    cloudSubscribeFriends();
+    cloudSubscribeCrewInvites();
+  }
+  // re-render everything that depends on the (now account-scoped) data
+  routines=loadRoutines();
+  renderProfile(); renderCrew(); renderFooter();
+  if(typeof renderRM==='function')renderRM();
+  if(typeof rfSync==='function')rfSync();
+});
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 3 · RUTINAS
+   ║  Routine Manager: vistas y edición de rutinas, importar/exportar rutinas, documentos y generador con IA.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
 
 /* ══════════════════════════════════════
    ROUTINE MANAGER — VIEW STATE
@@ -2736,156 +2991,6 @@ function meSave(){
   renderRM();
 }
 
-/* ── WAR JOURNAL — hierarchical: routine ▸ workout ▸ session ▸ detail ── */
-let jRoutine=null, jWorkout=null, jSessionId=null;
-
-function fmtDate(iso,withTime){
-  const d=new Date(iso);
-  const ds=d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'});
-  return withTime?`${ds} · ${d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'})}`:ds;
-}
-function journalRoutineNames(){
-  const order=[],seen={};
-  loadJournal().forEach(e=>{if(!seen[e.routineName]){seen[e.routineName]=1;order.push(e.routineName);}});
-  return order;
-}
-function journalWorkoutNames(routineName){
-  const order=[],seen={};
-  loadJournal().forEach(e=>{if(e.routineName===routineName&&!seen[e.workoutName]){seen[e.workoutName]=1;order.push(e.workoutName);}});
-  return order;
-}
-function journalSessions(routineName,workoutName){
-  return loadJournal().filter(e=>e.routineName===routineName&&e.workoutName===workoutName);
-}
-function sessionNumber(entry){
-  const asc=loadJournal().filter(e=>e.routineName===entry.routineName&&e.workoutName===entry.workoutName).slice().reverse();
-  return asc.findIndex(e=>e.id===entry.id)+1;
-}
-
-/* Level 1 — routines that have logged sessions */
-function viewJournalRoutines(){
-  const journal=loadJournal();
-  const names=journalRoutineNames();
-  let body;
-  if(!names.length){
-    body=`<div class="rm-empty"><div class="big">📓</div>No sessions logged yet.<br>Finish a workout to fill your war journal.</div>`;
-  } else {
-    body='<div class="rm-grid">'+names.map((name,i)=>{
-      const arr=journal.filter(e=>e.routineName===name);
-      const last=arr.reduce((a,b)=>new Date(a.dateISO)>new Date(b.dateISO)?a:b);
-      const wk=new Set(arr.map(e=>e.workoutName)).size;
-      return `<div class="rm-card">
-        <div class="rm-card-icon">📓</div>
-        <div class="rm-card-title">${esc(name)}</div>
-        <div class="rm-card-sub">${arr.length} session${arr.length!==1?'s':''} · ${wk} workout${wk!==1?'s':''}</div>
-        <div class="rm-card-sub" style="margin-top:4px">Last: ${fmtDate(last.dateISO)}</div>
-        <div class="rm-card-actions"><button class="open" onclick="jOpenRoutine(${i})">Open</button></div>
-      </div>`;
-    }).join('')+'</div>';
-  }
-  return `
-    <div class="rm-crumb">LIBRARY / WAR JOURNAL</div>
-    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
-    <div class="rm-title">War Journal 📓</div>
-    <div class="rm-subtitle">Organized by routine ▸ workout ▸ session.</div>
-    ${names.length?`<div class="rm-toolbar"><select id="sj-period" class="rm-btn ghost" onchange="sjPeriodChanged()"><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="12">Últimas 12 semanas</option><option value="all">Todo el historial</option><option value="custom">Rango personalizado…</option></select><span id="sj-custom" style="display:none;gap:.4rem;align-items:center"><input type="date" id="sj-from" class="rm-btn ghost"><input type="date" id="sj-to" class="rm-btn ghost"></span><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
-    ${body}`;
-}
-
-/* Level 2 — workouts logged within a routine */
-function viewJournalWorkouts(){
-  const journal=loadJournal();
-  const names=journalWorkoutNames(jRoutine);
-  const cards=names.map((wn,i)=>{
-    const arr=journal.filter(e=>e.routineName===jRoutine&&e.workoutName===wn);
-    const last=arr.reduce((a,b)=>new Date(a.dateISO)>new Date(b.dateISO)?a:b);
-    return `<div class="rm-card">
-      <div class="rm-card-icon">🗓️</div>
-      <div class="rm-card-title">${esc(wn)}</div>
-      <div class="rm-card-sub">${arr.length} session${arr.length!==1?'s':''}</div>
-      <div class="rm-card-sub" style="margin-top:4px">Last: ${fmtDate(last.dateISO)}</div>
-      <div class="rm-card-actions"><button class="open" onclick="jOpenWorkout(${i})">Open</button></div>
-    </div>`;
-  }).join('');
-  return `
-    <div class="rm-crumb">JOURNAL / ${esc(jRoutine).toUpperCase()}</div>
-    <button class="rm-back" onclick="jBackRoutines()">‹ Journal Routines</button>
-    <div class="rm-title">${esc(jRoutine)}</div>
-    <div class="rm-subtitle">Workouts logged under this routine.</div>
-    <div class="rm-grid">${cards}</div>`;
-}
-
-/* Level 3 — individual sessions for a workout */
-function viewJournalSessions(){
-  const sess=journalSessions(jRoutine,jWorkout);
-  const total=sess.length;
-  const cards=sess.map((e,i)=>{
-    const num=total-i;
-    return `<div class="rm-card">
-      <div class="rm-card-icon">📅</div>
-      <div class="rm-card-title">${esc(jWorkout)} — #${num}</div>
-      <div class="rm-card-sub">${fmtDate(e.dateISO,true)}</div>
-      <div class="rm-card-tags"><span class="rm-tag">${e.totalVolumeKg.toLocaleString()} kg</span><span class="rm-tag">${e.totalSets} sets</span></div>
-      <div class="rm-card-actions"><button class="open" onclick="jOpenSession('${e.id}')">View</button><button class="mini" title="Exportar para el coach" onclick="exportSession('${e.id}')">⤓</button></div>
-    </div>`;
-  }).join('');
-  return `
-    <div class="rm-crumb">JOURNAL / ${esc(jRoutine).toUpperCase()} / ${esc(jWorkout).toUpperCase()}</div>
-    <button class="rm-back" onclick="jBackWorkouts()">‹ ${esc(jRoutine)} Workouts</button>
-    <div class="rm-title">${esc(jWorkout)}</div>
-    <div class="rm-subtitle">${total} logged session${total!==1?'s':''} · newest first</div>
-    <div class="rm-grid">${cards}</div>`;
-}
-
-/* Level 4 — full session detail */
-function viewJournalSession(){
-  const entry=loadJournal().find(e=>e.id===jSessionId);
-  if(!entry){rmView='j-sessions';return viewJournalSessions();}
-  const num=sessionNumber(entry);
-  const mins=Math.max(1,Math.round(entry.durationSec/60));
-  const exHtml=entry.exercises.map(ex=>{
-    const ul=unitLabel(ex.unit);
-    const lines=ex.sets.map(s=>{
-      const hit=parseFloat(s.actual.reps)>=parseFloat(s.target.reps);
-      return `<div class="jr-set-line">
-        <span>SET ${s.setNum}</span>
-        <span>${s.target.reps}×${s.target.weight} <span style="opacity:.6">RIR ${s.target.rir}</span></span>
-        <span class="${hit?'hit':'miss'}">${s.actual.reps}×${s.actual.weight} ${ul} · RIR ${s.actual.rir}</span>
-      </div>`;
-    }).join('');
-    return `<div class="jr-ex">
-      <div class="jr-ex-name">${esc(ex.name)} <span class="jr-ex-unit">(${ul})</span></div>
-      <div class="jr-set-head"><span>Set</span><span>Target</span><span>Actual</span></div>
-      ${lines}
-    </div>`;
-  }).join('');
-  return `
-    <div class="rm-crumb">JOURNAL / ${esc(entry.routineName).toUpperCase()} / ${esc(entry.workoutName).toUpperCase()}</div>
-    <button class="rm-back" onclick="jBackSessions()">‹ ${esc(entry.workoutName)} Sessions</button>
-    <div class="rm-title">${esc(entry.workoutName)} — #${num}</div>
-    <div class="rm-subtitle">${esc(entry.routineName)} · ${fmtDate(entry.dateISO,true)}</div>
-    <div class="rm-toolbar"><button class="rm-btn ghost" onclick="exportSession('${entry.id}')">⤓ Exportar para el coach</button></div>
-    <div class="jr-card">
-      <div class="jr-head">
-        <div><div class="jr-title">Session Summary</div><div class="jr-sub">${fmtDate(entry.dateISO,true)}</div></div>
-        <div class="jr-stats">
-          <div class="jr-stat"><div class="jr-stat-val">${entry.totalVolumeKg.toLocaleString()}</div><div class="jr-stat-lbl">kg volume</div></div>
-          <div class="jr-stat"><div class="jr-stat-val">${entry.totalSets}</div><div class="jr-stat-lbl">sets</div></div>
-          <div class="jr-stat"><div class="jr-stat-val">${mins}'</div><div class="jr-stat-lbl">duration</div></div>
-        </div>
-      </div>
-      ${exHtml}
-    </div>`;
-}
-
-/* journal navigation */
-function jOpenRoutine(i){jRoutine=journalRoutineNames()[i];jWorkout=null;rmView='j-workouts';renderRM();}
-function jOpenWorkout(i){jWorkout=journalWorkoutNames(jRoutine)[i];rmView='j-sessions';renderRM();}
-function jOpenSession(id){jSessionId=id;rmView='j-session';renderRM();}
-function jBackRoutines(){rmView='j-routines';renderRM();}
-function jBackWorkouts(){rmView='j-workouts';renderRM();}
-function jBackSessions(){rmView='j-sessions';renderRM();}
-
 /* ══════════════════════════════════════
    ROUTINE MANAGER — NAV ACTIONS
 ══════════════════════════════════════ */
@@ -2893,7 +2998,6 @@ function rmOpenRoutine(id){rmRoutineId=id;rmView='workouts';renderRM();}
 function rmOpenWorkout(id){rmWorkoutId=id;rmEdit=false;rmView='workout';renderRM();}
 function rmBackToRoutines(){rmView='routines';rmRoutineId=null;rmWorkoutId=null;rmEdit=false;renderRM();}
 function rmBackToWorkouts(){rmView='workouts';rmWorkoutId=null;rmEdit=false;renderRM();}
-function rmGoJournal(){jRoutine=null;jWorkout=null;jSessionId=null;rmView='j-routines';renderRM();}
 function rmToggleEdit(){rmEdit=!rmEdit;renderRM();}
 
 /* CRUD — routines (name + curated fitness emoji via modal) */
@@ -3079,6 +3183,265 @@ function rmUpdateDrop(id,si,di,field,val,el){
   if(el)el.value=d[field];
   saveRoutines();
 }
+
+/* ══════════════════════════════════════
+   DOCUMENTS (text vault)
+══════════════════════════════════════ */
+const DKEY='gymAI_docs_v1';
+let docEditId=null;
+function loadDocs(){return JSON.parse(localStorage.getItem(DKEY)||'[]');}
+function saveDocs(d){localStorage.setItem(DKEY,JSON.stringify(d));}
+function rmGoDocs(){rmView='docs';renderRM();}
+function viewDocs(){
+  const docs=loadDocs();
+  let body;
+  if(!docs.length){
+    body=`<div class="rm-empty"><div class="big">📄</div>No documents yet.<br>Store training notes, programs or meal plans as text.</div>`;
+  } else {
+    body='<div class="rm-grid">'+docs.map(d=>`<div class="rm-card">
+      <div class="rm-card-icon">📄</div>
+      <div class="rm-card-title">${esc(d.title)}</div>
+      <div class="rm-card-sub">${fmtDate(d.dateISO,true)}</div>
+      <div class="doc-snippet">${esc((d.body||'').slice(0,140))||'(empty)'}</div>
+      <div class="rm-card-actions">
+        <button class="open" onclick="docOpen('${d.id}')">Open</button>
+        <button class="mini" title="Export .txt" onclick="docExport('${d.id}')">⤓</button>
+        <button class="mini del" title="Delete" onclick="docDelete('${d.id}')">🗑</button>
+      </div></div>`).join('')+'</div>';
+  }
+  return `
+    <div class="rm-crumb">LIBRARY / DOCUMENTS</div>
+    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
+    <div class="rm-title">Documents 📄</div>
+    <div class="rm-subtitle">Free-form text documents stored locally on this device.</div>
+    <div class="rm-toolbar"><button class="rm-btn" onclick="docOpen(null)">＋ New Document</button></div>
+    ${body}`;
+}
+function docOpen(id){
+  docEditId=id;
+  const d=id?loadDocs().find(x=>x.id===id):null;
+  document.getElementById('docmod-title').textContent=id?'Edit Document':'New Document';
+  document.getElementById('docmod-name').value=d?d.title:'';
+  document.getElementById('docmod-body').value=d?d.body:'';
+  openModal('doc-modal');
+}
+function docSave(){
+  const title=document.getElementById('docmod-name').value.trim()||'Untitled';
+  const body=document.getElementById('docmod-body').value;
+  const docs=loadDocs();
+  if(docEditId){const d=docs.find(x=>x.id===docEditId);if(d){d.title=title;d.body=body;d.dateISO=new Date().toISOString();}}
+  else{docs.unshift({id:uid(),title,body,dateISO:new Date().toISOString()});}
+  saveDocs(docs);closeModal('doc-modal');
+  if(rmView==='docs')renderRM();
+  showToast('Document saved');
+}
+function docDelete(id){if(!confirm('Delete this document?'))return;saveDocs(loadDocs().filter(d=>d.id!==id));renderRM();showToast('Document deleted');}
+function docExport(id){const d=loadDocs().find(x=>x.id===id);if(!d)return;downloadFile(safeName(d.title)+'.txt',d.body||'','text/plain');showToast('Document exported (.txt)');}
+function cloneRoutineFresh(r){
+  const validKeys=new Set(MUSCLE_GROUPS.map(g=>g.key));
+  const muscleKeyMap={'back':'upperback','lowerback':'upperback','erector':'upperback','traps':'upperback','forearms':'biceps'};
+  return {id:uid(),name:r.name||'Imported',icon:r.icon||'📋',complexity:rxLvl(r),workouts:(r.workouts||[]).map(w=>({
+    id:uid(),name:w.name||'Workout',exercises:(w.exercises||[]).map(e=>({
+      id:uid(),name:cleanExName(e.name)||'Exercise',meta:e.meta||'',unit:UNITS[e.unit]?e.unit:'kg',restSeconds:parseInt(e.restSeconds)||90,
+      muscles:dedupeMuscles(Array.isArray(e.muscles)?e.muscles.filter(m=>m&&m.key).map(m=>{
+        let k=m.key.toLowerCase();
+        if(muscleKeyMap[k])k=muscleKeyMap[k];
+        return validKeys.has(k)?{key:k,role:m.role==='primary'?'primary':'secondary'}:null;
+      }).filter(m=>m):[]),
+      sets:(e.sets||[]).map(cleanImportedSet)
+    }))
+  }))};
+}
+/* imported / cloned set → validated numbers + Advanced-level fields when present */
+function cleanImportedSet(s){
+  s=s||{};
+  const o={reps:cleanReps(s.reps),rir:cleanRir(s.rir),weight:cleanWeight(s.weight)};
+  if(s.tempo)o.tempo=(''+s.tempo).trim();
+  if(s.type&&RX_SET_TYPES[s.type])o.type=s.type;
+  if(s.note)o.note=(''+s.note).trim();
+  if(Array.isArray(s.dropsets)&&s.dropsets.length)o.dropsets=s.dropsets.map(d=>({reps:cleanReps(d&&d.reps),weight:cleanWeight(d&&d.weight)}));
+  return o;
+}
+function exportRoutine(id){
+  const r=findRoutine(id);if(!r)return;
+  downloadFile('gymai-routine-'+safeName(r.name)+'.json',JSON.stringify({app:'GymAI',version:2,type:'routine',exportedAt:new Date().toISOString(),routine:r},null,2));
+  showToast('Routine exported');
+}
+
+function triggerImport(){document.getElementById('import-file').click();}
+function importFromFile(file){
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const data=JSON.parse(reader.result);
+      let added=0;
+      if(data.type==='backup'||Array.isArray(data.routines)){showToast('This is a full backup — export individual routines to import them one by one');return;}
+      if(data.type==='routine'&&data.routine){routines.push(cloneRoutineFresh(data.routine));added++;}
+      else if(data.name&&data.workouts){routines.push(cloneRoutineFresh(data));added++;}
+      else{showToast('Unrecognized file format');return;}
+      if(Array.isArray(data.documents)&&data.documents.length){
+        const docs=loadDocs();
+        data.documents.forEach(d=>docs.unshift({id:uid(),title:d.title||'Imported',body:d.body||'',dateISO:d.dateISO||new Date().toISOString()}));
+        saveDocs(docs);
+      }
+      saveRoutines();rmView='routines';renderRM();rfSync();
+      showToast('Imported '+added+' routine'+(added!==1?'s':''));
+    }catch(err){showToast('Import failed — invalid file');}
+  };
+  reader.readAsText(file);
+}
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 4 · JOURNAL Y SESIÓN
+   ║  Player de sesión y War Journal (rutina ▸ workout ▸ sesión ▸ detalle).
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+
+/* ── WAR JOURNAL — hierarchical: routine ▸ workout ▸ session ▸ detail ── */
+let jRoutine=null, jWorkout=null, jSessionId=null;
+function journalRoutineNames(){
+  const order=[],seen={};
+  loadJournal().forEach(e=>{if(!seen[e.routineName]){seen[e.routineName]=1;order.push(e.routineName);}});
+  return order;
+}
+function journalWorkoutNames(routineName){
+  const order=[],seen={};
+  loadJournal().forEach(e=>{if(e.routineName===routineName&&!seen[e.workoutName]){seen[e.workoutName]=1;order.push(e.workoutName);}});
+  return order;
+}
+function journalSessions(routineName,workoutName){
+  return loadJournal().filter(e=>e.routineName===routineName&&e.workoutName===workoutName);
+}
+function sessionNumber(entry){
+  const asc=loadJournal().filter(e=>e.routineName===entry.routineName&&e.workoutName===entry.workoutName).slice().reverse();
+  return asc.findIndex(e=>e.id===entry.id)+1;
+}
+
+/* Level 1 — routines that have logged sessions */
+function viewJournalRoutines(){
+  const journal=loadJournal();
+  const names=journalRoutineNames();
+  let body;
+  if(!names.length){
+    body=`<div class="rm-empty"><div class="big">📓</div>No sessions logged yet.<br>Finish a workout to fill your war journal.</div>`;
+  } else {
+    body='<div class="rm-grid">'+names.map((name,i)=>{
+      const arr=journal.filter(e=>e.routineName===name);
+      const last=arr.reduce((a,b)=>new Date(a.dateISO)>new Date(b.dateISO)?a:b);
+      const wk=new Set(arr.map(e=>e.workoutName)).size;
+      return `<div class="rm-card">
+        <div class="rm-card-icon">📓</div>
+        <div class="rm-card-title">${esc(name)}</div>
+        <div class="rm-card-sub">${arr.length} session${arr.length!==1?'s':''} · ${wk} workout${wk!==1?'s':''}</div>
+        <div class="rm-card-sub" style="margin-top:4px">Last: ${fmtDate(last.dateISO)}</div>
+        <div class="rm-card-actions"><button class="open" onclick="jOpenRoutine(${i})">Open</button></div>
+      </div>`;
+    }).join('')+'</div>';
+  }
+  return `
+    <div class="rm-crumb">LIBRARY / WAR JOURNAL</div>
+    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
+    <div class="rm-title">War Journal 📓</div>
+    <div class="rm-subtitle">Organized by routine ▸ workout ▸ session.</div>
+    ${names.length?`<div class="rm-toolbar"><select id="sj-period" class="rm-btn ghost" onchange="sjPeriodChanged()"><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="12">Últimas 12 semanas</option><option value="all">Todo el historial</option><option value="custom">Rango personalizado…</option></select><span id="sj-custom" style="display:none;gap:.4rem;align-items:center"><input type="date" id="sj-from" class="rm-btn ghost"><input type="date" id="sj-to" class="rm-btn ghost"></span><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
+    ${body}`;
+}
+
+/* Level 2 — workouts logged within a routine */
+function viewJournalWorkouts(){
+  const journal=loadJournal();
+  const names=journalWorkoutNames(jRoutine);
+  const cards=names.map((wn,i)=>{
+    const arr=journal.filter(e=>e.routineName===jRoutine&&e.workoutName===wn);
+    const last=arr.reduce((a,b)=>new Date(a.dateISO)>new Date(b.dateISO)?a:b);
+    return `<div class="rm-card">
+      <div class="rm-card-icon">🗓️</div>
+      <div class="rm-card-title">${esc(wn)}</div>
+      <div class="rm-card-sub">${arr.length} session${arr.length!==1?'s':''}</div>
+      <div class="rm-card-sub" style="margin-top:4px">Last: ${fmtDate(last.dateISO)}</div>
+      <div class="rm-card-actions"><button class="open" onclick="jOpenWorkout(${i})">Open</button></div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="rm-crumb">JOURNAL / ${esc(jRoutine).toUpperCase()}</div>
+    <button class="rm-back" onclick="jBackRoutines()">‹ Journal Routines</button>
+    <div class="rm-title">${esc(jRoutine)}</div>
+    <div class="rm-subtitle">Workouts logged under this routine.</div>
+    <div class="rm-grid">${cards}</div>`;
+}
+
+/* Level 3 — individual sessions for a workout */
+function viewJournalSessions(){
+  const sess=journalSessions(jRoutine,jWorkout);
+  const total=sess.length;
+  const cards=sess.map((e,i)=>{
+    const num=total-i;
+    return `<div class="rm-card">
+      <div class="rm-card-icon">📅</div>
+      <div class="rm-card-title">${esc(jWorkout)} — #${num}</div>
+      <div class="rm-card-sub">${fmtDate(e.dateISO,true)}</div>
+      <div class="rm-card-tags"><span class="rm-tag">${e.totalVolumeKg.toLocaleString()} kg</span><span class="rm-tag">${e.totalSets} sets</span></div>
+      <div class="rm-card-actions"><button class="open" onclick="jOpenSession('${e.id}')">View</button><button class="mini" title="Exportar para el coach" onclick="exportSession('${e.id}')">⤓</button></div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="rm-crumb">JOURNAL / ${esc(jRoutine).toUpperCase()} / ${esc(jWorkout).toUpperCase()}</div>
+    <button class="rm-back" onclick="jBackWorkouts()">‹ ${esc(jRoutine)} Workouts</button>
+    <div class="rm-title">${esc(jWorkout)}</div>
+    <div class="rm-subtitle">${total} logged session${total!==1?'s':''} · newest first</div>
+    <div class="rm-grid">${cards}</div>`;
+}
+
+/* Level 4 — full session detail */
+function viewJournalSession(){
+  const entry=loadJournal().find(e=>e.id===jSessionId);
+  if(!entry){rmView='j-sessions';return viewJournalSessions();}
+  const num=sessionNumber(entry);
+  const mins=Math.max(1,Math.round(entry.durationSec/60));
+  const exHtml=entry.exercises.map(ex=>{
+    const ul=unitLabel(ex.unit);
+    const lines=ex.sets.map(s=>{
+      const hit=parseFloat(s.actual.reps)>=parseFloat(s.target.reps);
+      return `<div class="jr-set-line">
+        <span>SET ${s.setNum}</span>
+        <span>${s.target.reps}×${s.target.weight} <span style="opacity:.6">RIR ${s.target.rir}</span></span>
+        <span class="${hit?'hit':'miss'}">${s.actual.reps}×${s.actual.weight} ${ul} · RIR ${s.actual.rir}</span>
+      </div>`;
+    }).join('');
+    return `<div class="jr-ex">
+      <div class="jr-ex-name">${esc(ex.name)} <span class="jr-ex-unit">(${ul})</span></div>
+      <div class="jr-set-head"><span>Set</span><span>Target</span><span>Actual</span></div>
+      ${lines}
+    </div>`;
+  }).join('');
+  return `
+    <div class="rm-crumb">JOURNAL / ${esc(entry.routineName).toUpperCase()} / ${esc(entry.workoutName).toUpperCase()}</div>
+    <button class="rm-back" onclick="jBackSessions()">‹ ${esc(entry.workoutName)} Sessions</button>
+    <div class="rm-title">${esc(entry.workoutName)} — #${num}</div>
+    <div class="rm-subtitle">${esc(entry.routineName)} · ${fmtDate(entry.dateISO,true)}</div>
+    <div class="rm-toolbar"><button class="rm-btn ghost" onclick="exportSession('${entry.id}')">⤓ Exportar para el coach</button></div>
+    <div class="jr-card">
+      <div class="jr-head">
+        <div><div class="jr-title">Session Summary</div><div class="jr-sub">${fmtDate(entry.dateISO,true)}</div></div>
+        <div class="jr-stats">
+          <div class="jr-stat"><div class="jr-stat-val">${entry.totalVolumeKg.toLocaleString()}</div><div class="jr-stat-lbl">kg volume</div></div>
+          <div class="jr-stat"><div class="jr-stat-val">${entry.totalSets}</div><div class="jr-stat-lbl">sets</div></div>
+          <div class="jr-stat"><div class="jr-stat-val">${mins}'</div><div class="jr-stat-lbl">duration</div></div>
+        </div>
+      </div>
+      ${exHtml}
+    </div>`;
+}
+
+/* journal navigation */
+function jOpenRoutine(i){jRoutine=journalRoutineNames()[i];jWorkout=null;rmView='j-workouts';renderRM();}
+function jOpenWorkout(i){jWorkout=journalWorkoutNames(jRoutine)[i];rmView='j-sessions';renderRM();}
+function jOpenSession(id){jSessionId=id;rmView='j-session';renderRM();}
+function jBackRoutines(){rmView='j-routines';renderRM();}
+function jBackWorkouts(){rmView='j-workouts';renderRM();}
+function jBackSessions(){rmView='j-sessions';renderRM();}
+function rmGoJournal(){jRoutine=null;jWorkout=null;jSessionId=null;rmView='j-routines';renderRM();}
 function rmClearJournal(){
   if(!confirm('Permanently clear the entire war journal?'))return;
   listMarkWiped('journal');saveJournal([]);renderRM();showToast('Journal cleared');
@@ -3387,650 +3750,22 @@ function playerToggleMax(){
   document.getElementById('player-card').classList.toggle('maximized',player.maximized);
   document.getElementById('player-max-btn').textContent=player.maximized?'❐':'⛶';
 }
-function fmtClock(s){s=Math.max(0,s);const m=Math.floor(s/60).toString().padStart(2,'0');const ss=(s%60).toString().padStart(2,'0');return `${m}:${ss}`;}
 
-/* ══════════════════════════════════════
-   TOAST
-══════════════════════════════════════ */
-let toastTimeout;
-function showToast(msg){
-  clearTimeout(toastTimeout);
-  document.getElementById('toast-msg').textContent=msg;
-  document.getElementById('toast').classList.add('show');
-  toastTimeout=setTimeout(()=>document.getElementById('toast').classList.remove('show'),2800);
-}
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 5 · PROGRESIONES IA
+   ║  Motor Random Forest, reglas del juego, navegador de progresiones y metas por ejercicio.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
 
-/* ══════════════════════════════════════
-   FEED INTERACTIONS
-══════════════════════════════════════ */
-function toggleLike(btn){
-  btn.classList.toggle('liked');
-  if(btn.classList.contains('liked')){btn.innerHTML='♥ <span>Liked</span>';btn.style.color='#ff4f2b';}
-  else{btn.innerHTML='♡ <span>Like</span>';btn.style.color='';}
-}
-function openComments(){document.getElementById('comments-overlay').classList.add('show');}
-function sendComment(){
-  const inp=document.getElementById('comment-input');
-  if(!inp.value.trim())return;
-  const list=document.getElementById('comments-list');
-  const div=document.createElement('div');
-  div.style.cssText='background:rgba(255,79,43,0.05);border:1px solid rgba(255,79,43,0.2);border-radius:10px;padding:12px';
-  div.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:4px">Iván (You)</div><div style="font-size:13px;color:var(--white80)">"${esc(inp.value.trim())}"</div>`;
-  list.appendChild(div);inp.value='';list.scrollTop=list.scrollHeight;
-}
-function cloneRoutine(btn){
-  btn.classList.add('cloned');btn.innerHTML='✓ <span>Cloned!</span>';
-  showToast('Routine template cloned to your library');
-  setTimeout(()=>{btn.classList.remove('cloned');btn.innerHTML='⬇ <span>Clone Routine</span>';},3000);
-}
-
-/* ══════════════════════════════════════
-   MODAL HELPERS
-══════════════════════════════════════ */
-function openModal(id){document.getElementById(id).classList.add('show');}
-function closeModal(id){document.getElementById(id).classList.remove('show');}
-function b64(s){return btoa(unescape(encodeURIComponent(s)));}
-function unb64(s){return decodeURIComponent(escape(atob(s)));}
-
-/* ══════════════════════════════════════
-   DOCUMENTS (text vault)
-══════════════════════════════════════ */
-const DKEY='gymAI_docs_v1';
-let docEditId=null;
-function loadDocs(){return JSON.parse(localStorage.getItem(DKEY)||'[]');}
-function saveDocs(d){localStorage.setItem(DKEY,JSON.stringify(d));}
-function rmGoDocs(){rmView='docs';renderRM();}
-function viewDocs(){
-  const docs=loadDocs();
-  let body;
-  if(!docs.length){
-    body=`<div class="rm-empty"><div class="big">📄</div>No documents yet.<br>Store training notes, programs or meal plans as text.</div>`;
-  } else {
-    body='<div class="rm-grid">'+docs.map(d=>`<div class="rm-card">
-      <div class="rm-card-icon">📄</div>
-      <div class="rm-card-title">${esc(d.title)}</div>
-      <div class="rm-card-sub">${fmtDate(d.dateISO,true)}</div>
-      <div class="doc-snippet">${esc((d.body||'').slice(0,140))||'(empty)'}</div>
-      <div class="rm-card-actions">
-        <button class="open" onclick="docOpen('${d.id}')">Open</button>
-        <button class="mini" title="Export .txt" onclick="docExport('${d.id}')">⤓</button>
-        <button class="mini del" title="Delete" onclick="docDelete('${d.id}')">🗑</button>
-      </div></div>`).join('')+'</div>';
-  }
-  return `
-    <div class="rm-crumb">LIBRARY / DOCUMENTS</div>
-    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
-    <div class="rm-title">Documents 📄</div>
-    <div class="rm-subtitle">Free-form text documents stored locally on this device.</div>
-    <div class="rm-toolbar"><button class="rm-btn" onclick="docOpen(null)">＋ New Document</button></div>
-    ${body}`;
-}
-function docOpen(id){
-  docEditId=id;
-  const d=id?loadDocs().find(x=>x.id===id):null;
-  document.getElementById('docmod-title').textContent=id?'Edit Document':'New Document';
-  document.getElementById('docmod-name').value=d?d.title:'';
-  document.getElementById('docmod-body').value=d?d.body:'';
-  openModal('doc-modal');
-}
-function docSave(){
-  const title=document.getElementById('docmod-name').value.trim()||'Untitled';
-  const body=document.getElementById('docmod-body').value;
-  const docs=loadDocs();
-  if(docEditId){const d=docs.find(x=>x.id===docEditId);if(d){d.title=title;d.body=body;d.dateISO=new Date().toISOString();}}
-  else{docs.unshift({id:uid(),title,body,dateISO:new Date().toISOString()});}
-  saveDocs(docs);closeModal('doc-modal');
-  if(rmView==='docs')renderRM();
-  showToast('Document saved');
-}
-function docDelete(id){if(!confirm('Delete this document?'))return;saveDocs(loadDocs().filter(d=>d.id!==id));renderRM();showToast('Document deleted');}
-function docExport(id){const d=loadDocs().find(x=>x.id===id);if(!d)return;downloadFile(safeName(d.title)+'.txt',d.body||'','text/plain');showToast('Document exported (.txt)');}
-
-/* ══════════════════════════════════════
-   EXPORT / IMPORT
-══════════════════════════════════════ */
-function downloadFile(name,content,type){
-  const blob=new Blob([content],{type:type||'application/json'});
-  const url=URL.createObjectURL(blob);const a=document.createElement('a');
-  a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),1500);
-}
-function safeName(s){return String(s).replace(/[^\w\-]+/g,'_').slice(0,40)||'gymai';}
-function cloneRoutineFresh(r){
-  const validKeys=new Set(MUSCLE_GROUPS.map(g=>g.key));
-  const muscleKeyMap={'back':'upperback','lowerback':'upperback','erector':'upperback','traps':'upperback','forearms':'biceps'};
-  return {id:uid(),name:r.name||'Imported',icon:r.icon||'📋',complexity:rxLvl(r),workouts:(r.workouts||[]).map(w=>({
-    id:uid(),name:w.name||'Workout',exercises:(w.exercises||[]).map(e=>({
-      id:uid(),name:cleanExName(e.name)||'Exercise',meta:e.meta||'',unit:UNITS[e.unit]?e.unit:'kg',restSeconds:parseInt(e.restSeconds)||90,
-      muscles:dedupeMuscles(Array.isArray(e.muscles)?e.muscles.filter(m=>m&&m.key).map(m=>{
-        let k=m.key.toLowerCase();
-        if(muscleKeyMap[k])k=muscleKeyMap[k];
-        return validKeys.has(k)?{key:k,role:m.role==='primary'?'primary':'secondary'}:null;
-      }).filter(m=>m):[]),
-      sets:(e.sets||[]).map(cleanImportedSet)
-    }))
-  }))};
-}
-/* imported / cloned set → validated numbers + Advanced-level fields when present */
-function cleanImportedSet(s){
-  s=s||{};
-  const o={reps:cleanReps(s.reps),rir:cleanRir(s.rir),weight:cleanWeight(s.weight)};
-  if(s.tempo)o.tempo=(''+s.tempo).trim();
-  if(s.type&&RX_SET_TYPES[s.type])o.type=s.type;
-  if(s.note)o.note=(''+s.note).trim();
-  if(Array.isArray(s.dropsets)&&s.dropsets.length)o.dropsets=s.dropsets.map(d=>({reps:cleanReps(d&&d.reps),weight:cleanWeight(d&&d.weight)}));
-  return o;
-}
-function exportRoutine(id){
-  const r=findRoutine(id);if(!r)return;
-  downloadFile('gymai-routine-'+safeName(r.name)+'.json',JSON.stringify({app:'GymAI',version:2,type:'routine',exportedAt:new Date().toISOString(),routine:r},null,2));
-  showToast('Routine exported');
-}
-function exportBackup(){
-  const data={app:'GymAI',version:2,type:'backup',exportedAt:new Date().toISOString(),routines,documents:loadDocs(),journal:loadJournal()};
-  downloadFile('gymai-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(data,null,2));
-  showToast('Backup exported · '+routines.length+' routines');
-}
-/* ── COACH EXPORT: journalExport (one session) & Super Journal (everything) ── */
-function exportSessionObj(e){
-  return {id:e.id,date:e.dateISO,routine:e.routineName,workout:e.workoutName,
-    durationMin:Math.max(1,Math.round((e.durationSec||0)/60)),totalVolumeKg:e.totalVolumeKg||0,totalSets:e.totalSets||0,
-    exercises:(e.exercises||[]).map(ex=>({name:ex.name,unit:ex.unit,muscles:ex.muscles||[],
-      sets:(ex.sets||[]).map(st=>({set:st.setNum,target:st.target,actual:st.actual}))}))};
-}
-function activeRoutineName(){const j=loadJournal();return j.length?j[0].routineName:null;}
-function buildJournalExport(sessions,full,period){
-  const j=loadJournal();
-  const out={app:'GymAI',version:2,type:full?'superJournal':'journal',exportedAt:new Date().toISOString(),
-    athlete:coachProfileFull(),
-    bodyLog:full?loadBodyLog().filter(b=>!period||(b.date>=period.from&&b.date<=period.to)):loadBodyLog().slice(0,1),
-    activeRoutine:activeRoutineName(),
-    sessions:sessions.map(exportSessionObj)};
-  if(full){
-    out.routines=routines;
-    out.period=period?{from:period.from,to:period.to}:null;
-    const ss=sessions.slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));
-    out.totals={sessions:ss.length,firstSession:ss.length?ss[0].dateISO:null,lastSession:ss.length?ss[ss.length-1].dateISO:null};
-  }
-  return {journalExport:out};
-}
-function exportSession(id){
-  const e=loadJournal().find(x=>x.id===id);if(!e)return;
-  downloadFile('gymai-journal-'+safeName(e.workoutName)+'-'+String(e.dateISO).slice(0,10)+'.json',JSON.stringify(buildJournalExport([e],false),null,2));
-  showToast('Sesión exportada para el coach');
-}
-function sjPeriod(){
-  const v=(document.getElementById('sj-period')||{}).value||'all';
-  if(v==='all')return null;
-  const to=todayStr();
-  if(v==='custom'){
-    const f=(document.getElementById('sj-from')||{}).value,t=(document.getElementById('sj-to')||{}).value;
-    if(!f||!t||f>t){showToast('Elige un rango de fechas válido');return false;}
-    return {from:f,to:t};
-  }
-  const d=new Date();d.setDate(d.getDate()-7*parseInt(v,10));
-  return {from:d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()),to};
-}
-function sjPeriodChanged(){
-  const c=document.getElementById('sj-custom');
-  if(c)c.style.display=document.getElementById('sj-period').value==='custom'?'flex':'none';
-}
-function exportSuperJournal(){
-  const period=sjPeriod();if(period===false)return;
-  let j=loadJournal();
-  if(period)j=j.filter(e=>{const d=String(e.dateISO).slice(0,10);return d>=period.from&&d<=period.to;});
-  if(!j.length){showToast('No hay sesiones en ese periodo');return;}
-  downloadFile('gymai-super-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(buildJournalExport(j.slice().reverse(),true,period),null,2));
-  showToast('Super Journal exportado · '+j.length+' sesiones');
-}
-/* ══════════════════════════════════════
-   COACH REPORT — compact summary for the coach-gym Skill
-   {app,type:'coachReport',schemaVersion:1,…}. Built and downloaded on the
-   device only; nothing is sent anywhere. Weights stay in each exercise's own
-   unit (kg | lb | kg_db | lb_db = per dumbbell) and every block says which.
-══════════════════════════════════════ */
-const COACH_REPORT_SCHEMA=1;
-const UNIT_INFO={kg:'kg',lb:'lb',kg_db:'kg por mancuerna',lb_db:'lb por mancuerna'};
-function ymdOf(d){d=new Date(d);return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
-function weekStartOf(d){d=new Date(d);d.setHours(0,0,0,0);d.setDate(d.getDate()-((d.getDay()+6)%7));return ymdOf(d);}   // Monday
-function e1rm(w,r){w=+w||0;r=+r||0;return w>0&&r>0?round1(w*(1+r/30)):0;}   // Epley, in the exercise's unit
-function rsSet(t){return {reps:+t.reps||0,weight:+t.weight||0,rir:t.rir==null?null:+t.rir};}
-/* the plan a session followed: the routine version in force that day (routineHistory), else today's */
-function planFor(routineName,workoutName,dateISO){
-  const day=ymdOf(dateISO);
-  const h=listLive('routineHistory').filter(x=>x.routine&&x.routine.name===routineName&&x.date<=day)
-    .sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).pop();
-  const r=h?h.routine:routines.find(x=>x.name===routineName);
-  const w=r&&(r.workouts||[]).find(x=>x.name===workoutName);
-  return w?{source:h?'routineHistory':'currentRoutine',exercises:w.exercises||[]}:null;
-}
-function compactRoutine(r){
-  return r?{name:r.name,workouts:(r.workouts||[]).map(w=>({name:w.name,exercises:(w.exercises||[]).map(e=>({
-    name:e.name,unit:e.unit||'kg',restSeconds:e.restSeconds,muscles:e.muscles||[],sets:(e.sets||[]).map(rsSet)}))}))}:null;
-}
-function buildCoachReport(){
-  const now=new Date(),dAgo=n=>{const d=new Date();d.setDate(d.getDate()-n);return d;};
-  const W8=weekStartOf(dAgo(49)),D14=dAgo(14).toISOString(),D112=ymdOf(dAgo(112)),curWeek=weekStartOf(now);
-  const J=loadJournal().slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));   // oldest → newest
-  const inW8=J.filter(s=>weekStartOf(s.dateISO)>=W8);
-  const coach=coachProfileFull();
-
-  // per exercise (name + unit): best set ever, last session, recent trend of the top set vs target
-  const ex={};
-  J.forEach(s=>(s.exercises||[]).forEach(x=>{
-    const sets=(x.sets||[]).filter(t=>t&&t.actual);if(!sets.length)return;
-    const unit=x.unit||'kg',k=x.name+'|'+unit,e=ex[k]||(ex[k]={exercise:x.name,unit,muscles:x.muscles||[],best:null,hist:[]});
-    sets.forEach(t=>{const v=e1rm(t.actual.weight,t.actual.reps);if(v&&(!e.best||v>e.best.e1rm))e.best=Object.assign({date:ymdOf(s.dateISO),e1rm:v},rsSet(t.actual));});
-    const top=sets.reduce((a,t)=>(+t.actual.weight>+a.actual.weight||(+t.actual.weight===+a.actual.weight&&+t.actual.reps>+a.actual.reps))?t:a);
-    e.hist.push({date:ymdOf(s.dateISO),iso:s.dateISO,routine:s.routineName,workout:s.workoutName,sets,top});
-  }));
-  const exercises=Object.values(ex).filter(e=>e.hist.some(h=>weekStartOf(h.iso)>=W8)).map(e=>{
-    const last=e.hist[e.hist.length-1],trend=e.hist.slice(-6).map(h=>({
-      date:h.date,sets:h.sets.length,top:rsSet(h.top.actual),target:rsSet(h.top.target||{}),
-      metTarget:+h.top.actual.reps>=+(h.top.target||{}).reps&&+h.top.actual.weight>=+(h.top.target||{}).weight,
-      e1rm:e1rm(h.top.actual.weight,h.top.actual.reps)}));
-    return {exercise:e.exercise,unit:e.unit,muscles:e.muscles,bestSet:e.best,
-      lastSession:{date:last.date,routine:last.routine,workout:last.workout,sets:last.sets.map(t=>({target:rsSet(t.target||{}),actual:rsSet(t.actual)}))},
-      trend,e1rmChange:trend.length>1?round1(trend[trend.length-1].e1rm-trend[0].e1rm):null};
-  }).sort((a,b)=>String(b.lastSession.date).localeCompare(String(a.lastSession.date)));
-
-  // weekly direct sets per muscle (sets where the muscle is primary) + adherence, last 8 weeks
-  const weeks=[];for(let i=7;i>=0;i--){weeks.push({weekStart:weekStartOf(dAgo(i*7)),sessions:0,directSets:{}});}
-  const wk={};weeks.forEach(w=>wk[w.weekStart]=w);
-  inW8.forEach(s=>{const w=wk[weekStartOf(s.dateISO)];if(!w)return;w.sessions++;
-    (s.exercises||[]).forEach(x=>{const n=(x.sets||[]).filter(t=>t&&t.actual&&+t.actual.reps>0).length;if(!n)return;
-      (x.muscles||[]).filter(m=>m.role==='primary').forEach(m=>{w.directSets[m.key]=(w.directSets[m.key]||0)+n;});});});
-  const planned=coach.availability.daysPerWeek||null,full=weeks.filter(w=>w.weekStart!==curWeek),done=full.reduce((a,w)=>a+w.sessions,0);
-
-  // skipped / incomplete exercises vs the plan of that day
-  const skipped=[],skipCount={};
-  inW8.forEach(s=>{
-    const plan=planFor(s.routineName,s.workoutName,s.dateISO);if(!plan)return;
-    const doneSets={};(s.exercises||[]).forEach(x=>{doneSets[x.name]=(doneSets[x.name]||0)+(x.sets||[]).length;});
-    const sk=[],inc=[];
-    plan.exercises.forEach(pe=>{const d=doneSets[pe.name]||0,pl=(pe.sets||[]).length;
-      if(!d){sk.push(pe.name);skipCount[pe.name]=(skipCount[pe.name]||0)+1;}else if(d<pl)inc.push({exercise:pe.name,setsDone:d,setsPlanned:pl});});
-    if(sk.length||inc.length)skipped.push({date:ymdOf(s.dateISO),routine:s.routineName,workout:s.workoutName,planSource:plan.source,skipped:sk,incomplete:inc});
-  });
-
-  // body: dated series (16 weeks) + weekly average weight (8 weeks)
-  const BL=loadBodyLog().slice().reverse(),blRecent=BL.filter(e=>e.date>=D112);
-  const wAvg={};BL.filter(e=>e.weightKg!=null&&weekStartOf(e.date+'T12:00:00')>=W8).forEach(e=>{const k=weekStartOf(e.date+'T12:00:00');(wAvg[k]=wAvg[k]||[]).push(e.weightKg);});
-  const L=bodyLogLatest();
-
-  // goals: dated goals in force + per-exercise weight goals + the coach-profile goal
-  const exGoals=Object.entries(loadGoals()).map(([k,g])=>{const [rn,wn,en]=k.split('::');
-    const r=routines.find(x=>x.name===rn),w=r&&r.workouts.find(x=>x.name===wn),e=w&&w.exercises.find(x=>x.name===en);
-    return {routine:rn,workout:wn,exercise:en,unit:e?(e.unit||'kg'):null,startWeight:g.startWeight,targetWeight:g.targetWeight,startDate:ymdOf(g.startISO),deadline:ymdOf(g.deadlineISO)};});
-  const notes=listLive('notes');
-  const active=J.length?J[J.length-1].routineName:null;
-
-  return {app:'GymAI',type:'coachReport',schemaVersion:COACH_REPORT_SCHEMA,generatedAt:now.toISOString(),
-    units:{weights:'en la unidad de cada ejercicio (campo unit)',legend:UNIT_INFO,bodyWeight:'kg',measurements:'cm',
-      toKg:'lb × 0.453592; *_db = por mancuerna (×2 para el total)'},
-    window:{weeks8From:W8,sessionDetailFrom:ymdOf(D14),bodySeriesFrom:D112,today:todayStr()},
-    athlete:coach,
-    goals:{coachProfileGoal:coach.goal,active:goalsActive().map(g=>({phase:g.phase,description:g.description,startDate:g.startDate,targetDate:g.targetDate})),
-      exerciseGoals:exGoals},
-    injuriesAndNotes:{activeInjuries:notes.filter(n=>n.type==='injury'&&!n.resolvedDate).map(n=>({date:n.date,text:n.text})),
-      recent:notes.filter(n=>n.date>=D112).map(n=>({date:n.date,type:n.type,text:n.text,resolvedDate:n.resolvedDate}))},
-    body:{latest:L,
-      weight:blRecent.filter(e=>e.weightKg!=null).map(e=>({date:e.date,kg:e.weightKg})),
-      bodyFat:blRecent.filter(e=>e.bodyFatPercent!=null).map(e=>({date:e.date,pct:e.bodyFatPercent,method:e.bodyFatMethod})),
-      measurements:blRecent.filter(e=>BODY_M_KEYS.some(k=>e.measurementsCm[k]!=null)).map(e=>{const m={date:e.date};BODY_M_KEYS.forEach(k=>{if(e.measurementsCm[k]!=null)m[k]=e.measurementsCm[k];});return m;}),
-      weeklyAvgWeightKg:Object.keys(wAvg).sort().map(k=>({weekStart:k,avg:round1(wAvg[k].reduce((a,b)=>a+b,0)/wAvg[k].length),n:wAvg[k].length}))},
-    activeRoutine:compactRoutine(routines.find(r=>r.name===active)||null),
-    exercises,
-    weeklyDirectSetsByMuscle:weeks.map(w=>({weekStart:w.weekStart,partial:w.weekStart===curWeek,sets:w.directSets})),
-    adherence:{plannedPerWeek:planned,weeks:weeks.map(w=>({weekStart:w.weekStart,done:w.sessions,partial:w.weekStart===curWeek})),
-      fullWeeks:full.length,done,planned:planned?planned*full.length:null,pct:planned&&full.length&&inW8.length?Math.round(100*done/(planned*full.length)):null},
-    skippedExercises:{bySession:skipped,countByExercise:skipCount},
-    recentSessions:J.filter(s=>s.dateISO>=D14).reverse().map(s=>({date:s.dateISO,startedAt:s.startedAt||null,routine:s.routineName,workout:s.workoutName,
-      durationMin:Math.max(1,Math.round((s.durationSec||0)/60)),
-      exercises:(s.exercises||[]).map(x=>({name:x.name,unit:x.unit||'kg',sets:(x.sets||[]).map(t=>({set:t.setNum,target:rsSet(t.target||{}),actual:rsSet(t.actual||{}),at:t.at||null}))}))}))
-  };
-}
-function exportCoachReport(){
-  if(!cloudState.user){showToast('Inicia sesión para generar el informe');return;}
-  const r=buildCoachReport();
-  downloadFile('gymai-coach-report-'+todayStr()+'.json',JSON.stringify(r,null,1));
-  showToast('Informe para el coach descargado');
-}
-/* ══════════════════════════════════════
-   DATOS — clear test data by category (this account only: device + cloud).
-   Shows counts, offers a JSON backup and requires typing BORRAR.
-   Routines are only removed by their own separate option.
-══════════════════════════════════════ */
-function wipeList(name){listMarkWiped(name);localStorage.setItem(aKey(SYNC_LISTS[name].key),'[]');return syncList(name);}
-const DATA_PARTS={
-  journal:{label:'sesiones',count:()=>loadJournal().length,get:()=>loadJournal(),wipe:()=>wipeList('journal')},
-  bodyLog:{label:'registros de peso, % grasa y medidas',count:()=>loadBodyLog().length,get:()=>loadBodyLog(),wipe:()=>saveBodyLog([])},
-  goals:{label:'objetivos',count:()=>listLive('goals').length,get:()=>listLoad('goals'),wipe:()=>wipeList('goals')},
-  notes:{label:'lesiones y notas',count:()=>listLive('notes').length,get:()=>listLoad('notes'),wipe:()=>wipeList('notes')},
-  exerciseGoals:{label:'metas por ejercicio',count:()=>Object.keys(loadGoals()).length,get:()=>loadGoals(),
-    wipe:()=>{localStorage.setItem(aKey(RGKEY),'{}');localStorage.setItem(aKey(RGDIRTY),'1');return cloudPushExGoals();}},
-  musclePRs:{label:'PRs por músculo',count:()=>Object.values(loadMPRs()).reduce((a,v)=>a+(Array.isArray(v)?v.length:0),0),get:()=>loadMPRs(),
-    wipe:async()=>{saveMPRs({});if(window.Cloud&&window.Cloud.saveMusclePRs)await window.Cloud.saveMusclePRs(cloudState.user.uid,{});}},
-  profileHistory:{label:'versiones guardadas del perfil',count:()=>listLive('profileHistory').length,get:()=>listLoad('profileHistory'),wipe:()=>wipeList('profileHistory')},
-  routineHistory:{label:'cambios de rutina registrados',count:()=>listLive('routineHistory').length,get:()=>listLoad('routineHistory'),wipe:()=>wipeList('routineHistory')},
-  routines:{label:'rutinas',count:()=>routines.length,get:()=>routines,wipe:()=>{routines=[];saveRoutines();}}
-};
-const DATA_CATS={
-  sessions:{ico:'📓',label:'Sesiones',desc:'Todo el War Journal: sesiones, series, pesos y RIR.',parts:['journal'],keep:'rutinas, cuerpo, objetivos y notas'},
-  body:{ico:'⚖️',label:'Peso corporal y medidas',desc:'Peso, % de grasa y medidas de tu registro corporal.',parts:['bodyLog'],keep:'todo lo demás'},
-  goalsNotes:{ico:'🎯',label:'Objetivos y notas',desc:'Objetivos con fechas, lesiones/notas y metas por ejercicio.',parts:['goals','notes','exerciseGoals'],keep:'todo lo demás'},
-  allButRoutines:{ico:'🧹',label:'Todo menos mis rutinas',desc:'Sesiones, cuerpo, objetivos, notas, metas, PRs por músculo e historiales.',
-    parts:['journal','bodyLog','goals','notes','exerciseGoals','musclePRs','profileHistory','routineHistory'],keep:'tus rutinas, tu perfil y tu perfil del coach'},
-  routines:{ico:'📋',label:'Mis rutinas',desc:'Solo tus rutinas. Después se cargan las rutinas de ejemplo.',parts:['routines'],keep:'todo lo demás',danger:true}
-};
-let dataCat=null;
-function rmGoData(){dataCat=null;rmView='data';renderRM();}
-function dataPick(k){dataCat=k;renderRM();}
-function viewData(){
-  if(dataCat&&DATA_CATS[dataCat])return viewDataConfirm();
-  const cards=Object.entries(DATA_CATS).map(([k,c])=>{
-    const tags=c.parts.map(p=>`<span class="rm-tag">${DATA_PARTS[p].count()} ${DATA_PARTS[p].label}</span>`).join('');
-    return `<div class="rm-card">
-      <div class="rm-card-icon">${c.ico}</div>
-      <div class="rm-card-title">${c.label}</div>
-      <div class="rm-card-sub">${c.desc}</div>
-      <div class="rm-card-tags">${tags}</div>
-      <div class="rm-card-actions"><button class="${c.danger?'del':''}" onclick="dataPick('${k}')">Borrar…</button></div>
-    </div>`;
-  }).join('');
-  return `
-    <div class="rm-crumb">LIBRARY / DATOS</div>
-    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
-    <div class="rm-title">Datos 🗄</div>
-    <div class="rm-subtitle">Limpia tus datos de prueba. Solo afecta a tu cuenta (este dispositivo y tu nube). Tus rutinas no se tocan salvo que elijas «Mis rutinas».</div>
-    <div class="rm-toolbar">
-      <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
-      <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
-      ${demoHas()?`<button class="rm-btn ghost" onclick="demoSeed()">↻ Recargar datos de prueba</button><button class="rm-btn danger" onclick="demoRemove()">✕ Quitar datos de prueba</button>`:`<button class="rm-btn ghost" onclick="demoSeed()">🧪 Cargar datos de prueba</button>`}
-      <div class="spacer"></div>
-      <button class="rm-btn ghost" onclick="rmGoInspect()">🔍 Modo inspección</button>
-    </div>
-    <div class="rm-grid">${cards}</div>`;
-}
-function viewDataConfirm(){
-  const c=DATA_CATS[dataCat],rows=c.parts.map(p=>({p,n:DATA_PARTS[p].count()})),total=rows.reduce((a,r)=>a+r.n,0);
-  return `
-    <div class="rm-crumb">LIBRARY / DATOS / BORRAR</div>
-    <button class="rm-back" onclick="dataPick(null)">‹ Datos</button>
-    <div class="rm-title">${c.ico} Borrar: ${c.label}</div>
-    <div class="rm-subtitle">Se borra en este dispositivo y en tu nube. No se puede deshacer.</div>
-    <div class="jr-card" style="max-width:560px">
-      <div class="bl-sec" style="margin-top:0">Se borrarán ${total} registro${total!==1?'s':''}</div>
-      <div class="bl-chips" style="margin-bottom:12px">${rows.map(r=>`<span class="bl-chip"><b>${r.n}</b> ${DATA_PARTS[r.p].label}</span>`).join('')}</div>
-      <div class="bl-hint">Se conservan: ${c.keep}.</div>
-      <button class="rm-btn ghost" style="width:100%;margin:6px 0 16px" onclick="dataBackup('${dataCat}')">⤓ Descargar respaldo JSON antes de borrar</button>
-      <div class="bl-field"><label for="data-confirm">Escribe BORRAR para confirmar</label>
-        <input id="data-confirm" class="crew-input" autocomplete="off" autocapitalize="characters" placeholder="BORRAR" oninput="document.getElementById('data-go').disabled=this.value.trim()!=='BORRAR'"></div>
-      <button id="data-go" class="rm-btn danger" style="width:100%;margin-top:8px" disabled onclick="dataWipe()">🗑 Borrar definitivamente</button>
-    </div>`;
-}
-function dataBackup(cat){
-  const parts=cat==='all'?Object.keys(DATA_PARTS):DATA_CATS[cat].parts,data={};
-  parts.forEach(p=>{data[p]=DATA_PARTS[p].get();});
-  if(cat==='all'){data.profile=loadProfile();data.coachProfile=coachState.status==='ready'?coachState.data:null;}
-  downloadFile('gymai-respaldo-'+cat+'-'+todayStr()+'.json',JSON.stringify({app:'GymAI',type:'dataBackup',category:cat,createdAt:new Date().toISOString(),data},null,1));
-  showToast('Respaldo descargado');
-}
-async function dataWipe(){
-  const inp=document.getElementById('data-confirm');
-  if(!inp||inp.value.trim()!=='BORRAR'){showToast('Escribe BORRAR para confirmar');return;}
-  if(!cloudState.user||!DATA_CATS[dataCat])return;
-  const c=DATA_CATS[dataCat],uidAt=cloudState.user.uid,btn=document.getElementById('data-go');
-  btn.disabled=true;btn.textContent='Borrando…';
-  for(const p of c.parts){try{await DATA_PARTS[p].wipe();}catch(e){console.warn('[Data] wipe failed',p,e);}}
-  if(!cloudState.user||cloudState.user.uid!==uidAt)return;
-  dataCat=null;renderRM();renderProfile();
-  if(typeof cloudSyncMe==='function')cloudSyncMe();
-  if(typeof rfSync==='function')rfSync();
-  showToast(c.label+': borrado');
-}
-
-/* ══════════════════════════════════════
-   DEMO DATA — ~9 weeks of realistic history to try the coach Skill
-   (Datos ▸ Cargar datos de prueba). Everything added is tagged demo:true /
-   id "demo-…", so «Quitar datos de prueba» removes exactly that and never
-   touches your own records. Deterministic (seeded) so reports are reproducible.
-══════════════════════════════════════ */
-const DEMO_ROUTINE='Upper/Lower Hipertrofia (demo)';
-function isDemo(x){return !!x&&(x.demo===true||String(x.id||'').indexOf('demo-')===0||String(x.routineId||'').indexOf('demo-')===0);}
-function demoHas(){try{return routines.some(isDemo)||loadJournal().some(isDemo)||listLoad('goals').some(isDemo);}catch(e){return false;}}
-function demoPlan(version){
-  // name, unit, muscles ("*" = secondary), sets, reps, rir, base weight, +weight every 2 weeks, rest
-  const E=(name,unit,m,sets,reps,rir,w,inc,rest)=>({name,unit,sets,reps,rir,w,inc,rest,
-    muscles:m.split(',').map(k=>({key:k.replace('*',''),role:k.endsWith('*')?'secondary':'primary'}))});
-  return [
-    {key:'ua',name:'Upper A',day:0,ex:[E('Press banca con barra','kg','chest,triceps*,shoulders*',4,8,2,77.5,2.5,150),
-      E('Remo con barra','kg','upperback,lats*,biceps*',4,8,2,70,2.5,120),E('Press militar con mancuernas','kg_db','shoulders,triceps*',3,10,2,20,1,120),
-      E('Jalón al pecho','kg','lats,biceps*',3,10,2,60,2.5,90),E('Elevaciones laterales','kg_db','shoulders',3,15,1,9,0.5,60),
-      E('Curl con barra Z','kg','biceps',3,12,1,30,1.25,60)]},
-    {key:'la',name:'Lower A',day:1,ex:[E('Sentadilla','kg','quads,glutes*',4,6,2,100,2.5,180),
-      E('Peso muerto rumano','kg','hamstrings,glutes*',3,8,2,90,2.5,150),E('Prensa','kg','quads',3,12,2,180,5,120),
-      E('Curl femoral tumbado','kg','hamstrings',3,12,1,45,1.25,75),E('Elevación de talones de pie','kg','calves',4,15,1,80,2.5,60)]},
-    {key:'ub',name:'Upper B',day:3,ex:[E('Press inclinado con mancuernas','kg_db','chest,shoulders*',4,10,2,28,1,120),
-      E('Dominadas','kg','lats,biceps*',4,7,2,0,0,120),E('Press militar con barra','kg','shoulders,triceps*',3,8,2,45,1.25,120),
-      E('Remo en polea baja','lb','upperback,lats*',3,12,2,140,5,90),E('Elevaciones laterales en polea','kg','shoulders',3,15,1,7.5,0,60),
-      E('Extensión de tríceps en polea','kg','triceps',3,12,1,25,1.25,60)]},
-    {key:'lb',name:'Lower B',day:4,ex:[E('Peso muerto convencional','kg','hamstrings,glutes*,upperback*',3,5,2,130,2.5,180),
-      version===1?E('Extensión de cuádriceps','kg','quads',3,15,1,55,2.5,75):E('Sentadilla búlgara','kg_db','quads,glutes*',3,10,2,16,1,120),
-      E('Hip thrust','kg','glutes,hamstrings*',3,10,2,100,5,120),E('Curl femoral sentado','kg','hamstrings',3,12,1,40,1.25,75),
-      E('Elevación de talones sentado','kg','calves',3,15,1,40,2.5,60)]}
-  ];
-}
-async function demoSeed(){
-  if(!cloudState.user){showToast('Inicia sesión primero');return;}
-  if(demoHas()){
-    if(!confirm('Ya hay datos de prueba. ¿Recargarlos desde cero? Se quitan los de prueba y se vuelven a cargar; tus datos reales no se tocan.'))return;
-    if(!(await demoRemove(true)))return;
-  }else if(!confirm('¿Cargar ~9 semanas de datos de prueba (rutina, sesiones, peso corporal, objetivos y notas)? Quedan marcados como prueba y puedes quitarlos después sin tocar tus datos.'))return;
-  let seed=20261007;const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return ((t^t>>>14)>>>0)/4294967296;};
-  const today=new Date();today.setHours(0,0,0,0);
-  const mon0=new Date(today);mon0.setDate(mon0.getDate()-((mon0.getDay()+6)%7)-56);   // Monday, 8 weeks ago
-  const dayOf=(w,d,h,m)=>{const x=new Date(mon0);x.setDate(x.getDate()+w*7+d);x.setHours(h||0,m||0,0,0);return x;};
-  const ymd=d=>ymdOf(d),iso=d=>d.toISOString();
-  const editDate=dayOf(4,2,12),injury=dayOf(6,1),healed=dayOf(8,0),DELOAD=5;
-  const SKIP=new Set(['1:lb','3:la','5:ub','7:lb']);
-  const r5=(v,u,base)=>{const st=u==='lb'?5:u==='kg_db'?1:(base||v)>=40?2.5:1.25;return Math.round(v/st)*st;};   // real plate jumps
-  const tw=(e,w)=>{if(!e.w)return 0;let v=e.w+e.inc*Math.floor(w/2);if(w===DELOAD)v*=0.9;return r5(v,e.unit,e.w);};
-  const tr=(e,w)=>e.w?e.reps:e.reps+Math.floor(w/3);
-  const toRoutine=(version,w)=>({id:'demo-r1',name:DEMO_ROUTINE,icon:'🧪',complexity:2,demo:true,
-    workouts:demoPlan(version).map(wk=>({id:'demo-w-'+wk.key,name:wk.name,exercises:wk.ex.map((e,i)=>({id:'demo-e-'+wk.key+i,name:e.name,meta:'',unit:e.unit,
-      restSeconds:e.rest,muscles:e.muscles,sets:Array.from({length:e.sets},()=>({reps:tr(e,w),rir:e.rir,weight:tw(e,w)}))}))}))});
-  // sessions
-  const sessions=[];
-  for(let w=0;w<9;w++)for(const wk of demoPlan(2)){
-    const start=dayOf(w,wk.day,18,25+Math.floor(rnd()*35));
-    if(start>=today||SKIP.has(w+':'+wk.key))continue;
-    const plan=start<editDate?demoPlan(1).find(x=>x.key===wk.key):wk;
-    let t=start.getTime();const exs=[];
-    plan.ex.forEach((e,ei)=>{
-      const isOHP=/Press militar/.test(e.name);
-      if(isOHP&&w===6)return;                                    // shoulder flare-up: skipped
-      if(/laterales/.test(e.name)&&rnd()<0.22)return;            // sometimes dropped at the end
-      let W=tw(e,w);if(isOHP&&w===7)W=r5(W*0.85,e.unit);
-      const R=tr(e,w),RIR=w===DELOAD?Math.min(10,e.rir+2):e.rir,sets=[];
-      for(let i=0;i<e.sets;i++){
-        t+=(i?e.rest:90)*1000+Math.floor(rnd()*40000);
-        let reps=R;const q=rnd();
-        if(i===e.sets-1&&q<0.35)reps=R-1;else if(q>0.9)reps=R+1;
-        if(ei===0&&wk.key==='ua'&&w>=6&&i>=e.sets-2)reps=R-(i===e.sets-1?2:1);   // bench press stalls late in the cut
-        const rir=Math.max(0,Math.min(10,RIR+(reps<R?-1:reps>R?1:0)));
-        sets.push({setNum:i+1,target:{reps:R,weight:W,rir:RIR},actual:{reps,weight:W,rir},at:new Date(t).toISOString()});
-      }
-      exs.push({exId:'demo-e-'+wk.key+ei,name:e.name,unit:e.unit,muscles:e.muscles,sets});
-    });
-    const end=new Date(t+120000);
-    const vol=Math.round(exs.reduce((a,x)=>a+x.sets.reduce((b,st)=>b+toKg(st.actual.weight,x.unit)*st.actual.reps,0),0));
-    sessions.push({id:'demo-s-'+w+'-'+wk.key,dateISO:iso(end),startedAt:iso(start),routineName:DEMO_ROUTINE,workoutName:wk.name,
-      durationSec:Math.round((end-start)/1000),totalVolumeKg:vol,totalSets:exs.reduce((a,x)=>a+x.sets.length,0),exercises:exs,demo:true});
-  }
-  // body log: 3 weigh-ins a week (cutting ~0.35 kg/week), body fat every 2 weeks, tape every 4 weeks
-  const body=[];
-  for(let w=0;w<9;w++)[0,2,5].forEach(d=>{
-    const day=dayOf(w,d,7,10);if(day>=today)return;const n=w*7+d;
-    const e={id:'demo-b-'+n,date:ymd(day),weightKg:Math.round((82.4-0.05*n+(rnd()-0.5)*0.5)*10)/10,bodyFatPercent:null,bodyFatMethod:null,
-      measurementsCm:{},note:'',createdAt:iso(day),updatedAt:iso(day),demo:true};
-    if(d===0&&w%2===0){e.bodyFatPercent=Math.round((18.6-0.21*w)*10)/10;e.bodyFatMethod='báscula bioimpedancia';}
-    if(d===0&&w%4===0)e.measurementsCm={waist:87-0.32*w,chest:104-0.06*w,arm:37.5-0.03*w,thigh:59-0.12*w,hips:98-0.18*w,neck:39-0.03*w};
-    Object.keys(e.measurementsCm).forEach(k=>{e.measurementsCm[k]=Math.round(e.measurementsCm[k]*10)/10;});
-    body.push(normBodyEntry(e));
-  });
-  const now=iso(new Date()),d0=dayOf(0,0,9);
-  const stamp=a=>a.forEach(x=>{x.addedAt=now;});
-  const ago=n=>{const x=new Date(today);x.setDate(x.getDate()+n);return ymd(x);};
-  const goals=[
-    {id:'demo-g0',phase:'bulking',description:'Volumen limpio',startDate:ago(-150),targetDate:null,endDate:ymd(d0),status:'replaced',createdAt:iso(new Date(today.getTime()-150*864e5)),updatedAt:iso(d0),demo:true},
-    {id:'demo-g1',phase:'cutting',description:'Bajar a 15% de grasa manteniendo la fuerza',startDate:ymd(d0),targetDate:ago(28),endDate:null,status:'active',createdAt:iso(d0),updatedAt:iso(d0),demo:true},
-    {id:'demo-g2',phase:null,description:'Press banca 90 kg × 6',startDate:ymd(d0),targetDate:ago(56),endDate:null,status:'active',createdAt:iso(d0),updatedAt:iso(d0),demo:true}];
-  const notes=[
-    {id:'demo-n1',type:'note',date:ymd(dayOf(DELOAD,0)),text:'Semana de descarga: pesos ~10% abajo y RIR +2',resolvedDate:null,createdAt:iso(dayOf(DELOAD,0,20)),updatedAt:iso(dayOf(DELOAD,0,20)),demo:true},
-    {id:'demo-n2',type:'injury',date:ymd(injury),text:'Molestia en hombro derecho al hacer press militar',resolvedDate:healed<today?ymd(healed):null,createdAt:iso(dayOf(6,1,21)),updatedAt:iso(healed<today?healed:dayOf(6,1,21)),demo:true},
-    {id:'demo-n3',type:'note',date:ymd(dayOf(7,2)),text:'Dormí mal toda la semana, rendimiento bajo',resolvedDate:null,createdAt:iso(dayOf(7,2,22)),updatedAt:iso(dayOf(7,2,22)),demo:true},
-    {id:'demo-n4',type:'injury',date:ago(-4),text:'Leve molestia en rodilla izquierda en sentadilla búlgara',resolvedDate:null,createdAt:iso(new Date(today.getTime()-4*864e5)),updatedAt:iso(new Date(today.getTime()-4*864e5)),demo:true}];
-  const rh=[
-    {id:'demo-rh1',routineId:'demo-r1',name:DEMO_ROUTINE,action:'created',date:ymd(d0),createdAt:iso(d0),updatedAt:iso(d0),routine:toRoutine(1,0),demo:true},
-    {id:'demo-rh2',routineId:'demo-r1',name:DEMO_ROUTINE,action:'edited',date:ymd(editDate),createdAt:iso(editDate),updatedAt:iso(editDate),routine:toRoutine(2,4),demo:true}];
-  stamp(sessions);stamp(goals);stamp(notes);stamp(rh);
-  // write through the normal save paths (device + cloud, merged)
-  listSave('routineHistory',listLoad('routineHistory').concat(rh));
-  routines.push(toRoutine(2,8));saveRoutines();
-  saveJournal(loadJournal().concat(sessions).sort((a,b)=>String(b.dateISO).localeCompare(String(a.dateISO))));
-  const bl=loadBodyLog(),taken=new Set(bl.map(e=>e.date));saveBodyLog(bl.concat(body.filter(e=>!taken.has(e.date))));
-  listSave('goals',listLoad('goals').concat(goals));
-  listSave('notes',listLoad('notes').concat(notes));
-  const g=loadGoals();g[DEMO_ROUTINE+'::Upper A::Press banca con barra']={startWeight:77.5,targetWeight:90,startISO:iso(d0),deadlineISO:iso(new Date(today.getTime()+56*864e5)),demo:true};saveGoals(g);
-  // coach profile: filled only when it is still empty, so a real one is never overwritten
-  if(coachState.status==='ready'&&window.Cloud&&window.Cloud.saveCoachProfile){
-    const c=normCoach(coachState.data);
-    if(!c.goal.phase&&!c.availability.daysPerWeek){
-      const data=normCoach(Object.assign({},c,{goal:{phase:'cutting',aestheticGoal:'hombros más anchos y cintura marcada',priorityMuscles:['shoulders','lats']},
-        experience:'intermedio, 3 años',availability:{daysPerWeek:4,sessionMinutes:75},equipment:'gimnasio completo',
-        preferences:{liked:['press banca','dominadas'],avoided:['sentadilla frontal']},nutrition:{calories:2300,proteinG:170}}));
-      window.Cloud.saveCoachProfile(cloudState.user.uid,data).then(()=>{coachState={status:'ready',data};markSynced('coachProfile');profileSnapshot('coach');renderProfile();}).catch(()=>{});
-    }
-  }
-  renderRM();renderProfile();if(typeof rfSync==='function')rfSync();
-  showToast('Datos de prueba cargados · '+sessions.length+' sesiones');
-}
-/* read cloud → merge → drop matching items → write both (removal can't go through the additive merge) */
-async function purgeList(name,pred){
-  const cfg=SYNC_LISTS[name],uidAt=cloudState.user.uid;
-  clearTimeout(_syncTimers[name]);
-  let cloud;try{cloud=await window.Cloud.getData(uidAt,name);}catch(e){return false;}
-  const cl=cloud&&Array.isArray(cloud.value)?cloud.value:[];
-  const merged=mergeById(cl,listLoad(name)).filter(x=>!pred(x));
-  if(cfg.sort)merged.sort(cfg.sort);
-  localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
-  try{await window.Cloud.setData(uidAt,name,merged,(cloud&&cloud.wipedAt)||localStorage.getItem(aKey(cfg.key+'_wiped'))||null);markSynced(name);}catch(e){return false;}
-  return true;
-}
-async function demoRemove(quiet){
-  if(!cloudState.user)return false;
-  if(!quiet&&!confirm('¿Quitar todos los datos de prueba? Tus datos reales no se tocan.'))return false;
-  routines=routines.filter(r=>!isDemo(r));saveRoutines();
-  for(const n of ['journal','goals','notes','routineHistory']){
-    if(!(await purgeList(n,isDemo))){showToast('Sin conexión: no se pudo quitar todo, intenta de nuevo');renderRM();return false;}
-  }
-  saveBodyLog(loadBodyLog().filter(e=>!isDemo(e)));
-  const g=loadGoals();Object.keys(g).forEach(k=>{if(g[k]&&g[k].demo)delete g[k];});saveGoals(g);
-  renderRM();renderProfile();if(typeof rfSync==='function')rfSync();
-  if(!quiet)showToast('Datos de prueba eliminados');
-  return true;
-}
-
-/* ══════════════════════════════════════
-   INSPECTION MODE (temporary) — read-only check that everything is being saved.
-   To remove: delete this block, the `inspect:viewInspect` entry in renderRM()
-   and the «Modo inspección» button in viewData().
-══════════════════════════════════════ */
-function rmGoInspect(){rmView='inspect';renderRM();}
-function viewInspect(){
-  const J=loadJournal(),BL=loadBodyLog(),sync=lastSynced(),t=iso=>iso?fmtDate(iso,true):'—',
-    tc=iso=>{if(!iso)return '—';const d=new Date(iso);return ymdOf(d)+' '+pad2(d.getHours())+':'+pad2(d.getMinutes());};
-  const maxTs=arr=>arr.map(x=>String(x||'')).filter(Boolean).sort().pop()||null;
-  const sets=[];J.forEach(s=>(s.exercises||[]).forEach(x=>(x.sets||[]).forEach(st=>sets.push({at:st.at||s.dateISO,ex:x.name,unit:unitLabel(x.unit),a:st.actual||{}}))));
-  sets.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
-  const ts=e=>e.updatedAt||e.createdAt||(e.date?e.date+'T00:00:00':null);
-  const wt=BL.filter(e=>e.weightKg!=null),bf=BL.filter(e=>e.bodyFatPercent!=null),ms=BL.filter(e=>BODY_M_KEYS.some(k=>e.measurementsCm[k]!=null));
-  const goals=listLive('goals').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
-  const notes=listLive('notes').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
-  const rh=listLive('routineHistory').sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  const ph=listLive('profileHistory').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
-  const exG=Object.entries(loadGoals());
-  const cats=[
-    {ico:'📓',name:'Sesiones',n:J.length,doc:'journal',local:maxTs(J.map(e=>e.dateISO)),
-      rows:J.slice(0,5).map(e=>[tc(e.dateISO),`${esc(e.routineName)} · ${esc(e.workoutName)} · ${(e.exercises||[]).reduce((a,x)=>a+(x.sets||[]).length,0)} series`])},
-    {ico:'🏋️',name:'Series',n:sets.length,doc:'journal',local:sets[0]&&sets[0].at,
-      rows:sets.slice(0,5).map(x=>[tc(x.at),`${esc(x.ex)} · ${x.a.weight} ${x.unit} × ${x.a.reps} · RIR ${x.a.rir}`])},
-    {ico:'⚖️',name:'Peso corporal',n:wt.length,doc:'bodyLog',local:maxTs(wt.map(ts)),rows:wt.slice(0,5).map(e=>[e.date,`${e.weightKg} kg${e.revisions?` · ${e.revisions.length} corrección(es)`:''}`])},
-    {ico:'🔬',name:'% de grasa',n:bf.length,doc:'bodyLog',local:maxTs(bf.map(ts)),rows:bf.slice(0,5).map(e=>[e.date,`${e.bodyFatPercent}%${e.bodyFatMethod?' · '+esc(e.bodyFatMethod):''}`])},
-    {ico:'📏',name:'Medidas',n:ms.length,doc:'bodyLog',local:maxTs(ms.map(ts)),
-      rows:ms.slice(0,5).map(e=>[e.date,BODY_M_KEYS.filter(k=>e.measurementsCm[k]!=null).map(k=>`${BODY_M_LABELS[k]} ${e.measurementsCm[k]}`).join(' · ')])},
-    {ico:'🎯',name:'Objetivos',n:goals.length,doc:'goals',local:maxTs(goals.map(g=>g.updatedAt)),
-      rows:goals.slice(0,5).map(g=>[g.startDate,`${g.endDate?'✓ ':'● '}${g.phase?COACH_LABELS[g.phase]+' · ':''}${esc(g.description)}`])},
-    {ico:'🏁',name:'Metas por ejercicio',n:exG.length,doc:'exerciseGoals',local:null,
-      rows:exG.slice(0,5).map(([k,g])=>[ymdOf(g.startISO),`${esc(k.split('::').pop())} · ${g.startWeight}→${g.targetWeight} · límite ${ymdOf(g.deadlineISO)}`])},
-    {ico:'🩹',name:'Lesiones y notas',n:notes.length,doc:'notes',local:maxTs(notes.map(x=>x.updatedAt)),
-      rows:notes.slice(0,5).map(x=>[x.date,`${x.type==='injury'?'🩹':'📝'} ${esc(x.text.length>60?x.text.slice(0,60)+'…':x.text)}${x.resolvedDate?' · resuelta':''}`])},
-    {ico:'📋',name:'Rutinas',n:routines.length,doc:'routines',local:rh[0]&&rh[0].updatedAt,
-      rows:routines.slice(0,5).map(r=>{const h=rh.find(x=>x.routineId===r.id);return [h?h.date:'—',`${esc(r.name)} · ${(r.workouts||[]).length} workouts${h?' · '+h.action:''}`];})},
-    {ico:'🕓',name:'Cambios de rutina',n:rh.length,doc:'routineHistory',local:rh[0]&&rh[0].updatedAt,rows:rh.slice(0,5).map(h=>[h.date,`${h.action} · ${esc(h.name||'')}${h.trimmed?' · (resumido)':''}`])},
-    {ico:'👤',name:'Versiones del perfil',n:ph.length,doc:'profileHistory',local:ph[0]&&ph[0].createdAt,rows:ph.slice(0,5).map(h=>[tc(h.createdAt),h.source==='coach'?'Perfil del coach':'Perfil de atleta'])}
-  ];
-  const cards=cats.map(c=>`<div class="jr-card">
-      <div class="jr-head" style="margin-bottom:8px"><div><div class="jr-title">${c.ico} ${c.name}</div>
-        <div class="jr-sub">Dispositivo: ${t(c.local)} · Nube: ${t(sync[c.doc])}</div></div>
-        <div class="jr-stats"><div class="jr-stat"><div class="jr-stat-val">${c.n}</div><div class="jr-stat-lbl">registros</div></div></div></div>
-      ${c.rows.length?c.rows.map(r=>`<div class="jr-set-line" style="grid-template-columns:118px 1fr"><span>${esc(r[0]||'—')}</span><span>${r[1]}</span></div>`).join(''):'<div class="bl-hint" style="margin:0">Sin registros.</div>'}
-    </div>`).join('');
-  return `
-    <div class="rm-crumb">LIBRARY / DATOS / INSPECCIÓN</div>
-    <button class="rm-back" onclick="rmGoData()">‹ Datos</button>
-    <div class="rm-title">Modo inspección 🔍</div>
-    <div class="rm-subtitle">Conteo y últimos 5 registros de cada tipo. «Nube» es la última vez que se guardó correctamente en tu cuenta.</div>
-    <div class="rm-toolbar"><button class="rm-btn ghost" onclick="renderRM()">↻ Actualizar</button></div>
-    ${cards}`;
-}
-/* ══════════ end INSPECTION MODE ══════════ */
-
-function triggerImport(){document.getElementById('import-file').click();}
-function importFromFile(file){
-  if(!file)return;
-  const reader=new FileReader();
-  reader.onload=()=>{
-    try{
-      const data=JSON.parse(reader.result);
-      let added=0;
-      if(data.type==='backup'||Array.isArray(data.routines)){showToast('This is a full backup — export individual routines to import them one by one');return;}
-      if(data.type==='routine'&&data.routine){routines.push(cloneRoutineFresh(data.routine));added++;}
-      else if(data.name&&data.workouts){routines.push(cloneRoutineFresh(data));added++;}
-      else{showToast('Unrecognized file format');return;}
-      if(Array.isArray(data.documents)&&data.documents.length){
-        const docs=loadDocs();
-        data.documents.forEach(d=>docs.unshift({id:uid(),title:d.title||'Imported',body:d.body||'',dateISO:d.dateISO||new Date().toISOString()}));
-        saveDocs(docs);
-      }
-      saveRoutines();rmView='routines';renderRM();rfSync();
-      showToast('Imported '+added+' routine'+(added!==1?'s':''));
-    }catch(err){showToast('Import failed — invalid file');}
-  };
-  reader.readAsText(file);
-}
 
 /* ══════════════════════════════════════
    AI PROGRESSIONS — RANDOM FOREST ENGINE
    Supervised classifier on reps · weight · RIR →
    {decrease, maintain, increase} per exercise.
 ══════════════════════════════════════ */
-let rfModel=null, rfTrainAcc=0; const RF_TREES=40, RF_DEPTH=10, RF_MINS=4, RF_MTRY=3;
+let rfModel=null, rfTrainAcc=0;
+ const RF_TREES=40, RF_DEPTH=10, RF_MINS=4, RF_MTRY=3;
 const RF_NCLASS=5; // 0=dec_lot 1=dec 2=maintain 3=inc 4=inc_lot
 const RF_DIM=9;    // feature vector dimension (see rfFeatures)
-function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
-function avg(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0;}
 function argmax(a){let m=0;for(let i=1;i<a.length;i++)if(a[i]>a[m])m=i;return m;}
 
 /* --- CART tree (Gini, sorted-sweep splits) + bagged forest --- */
@@ -4594,7 +4329,6 @@ function rfRemoveGoal(b){const key=unb64(b);if(!confirm('¿Eliminar esta meta?')
 /* minimum progression increment per unit — results must be multiples of this:
    kg → 2.5 (2.5,5,7.5,10…) · kg/db → 2 (2,4,6,8…) · lb & lb/db → 5 (5,10,15,20…) */
 function rfStepForUnit(u){return u==='kg'?2.5:(u==='kg_db'?2:5);}
-function round1(w){return Math.round(w*10)/10;}
 function snapMul(w,step){return round1(Math.round((+w||0)/step)*step);}
 
 /* Smart delta — anchored to DEMONSTRATED strength, not the bare target.
@@ -4830,19 +4564,11 @@ function rfClearCorrection(b){
   trainRF();rfRun();showToast('Corrección deshecha.');
 }
 
-/* ══════════════════════════════════════
-   RADAR CHART
-══════════════════════════════════════ */
-/* ══════════════════════════════════════
-   ATHLETE PROFILE — register · CV · edit
-   Empty on first run. A step-by-step wizard collects name, photo,
-   sex, age, height, weight, body fat → saved to localStorage and
-   shown as an editable presentation card. All data is updatable.
-══════════════════════════════════════ */
-const PFKEY='gymAI_profile_v1';
-function loadProfile(){try{return JSON.parse(localStorage.getItem(aKey(PFKEY))||'null');}catch(e){return null;}}
-function saveProfileData(p){localStorage.setItem(aKey(PFKEY),JSON.stringify(p));}
-const SEX_META={male:{ico:'♂',label:'Male'},female:{ico:'♀',label:'Female'}};
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 6 · CUERPO
+   ║  Registro corporal: peso, % de grasa y medidas.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
 
 /* ══════════════════════════════════════
    BODY LOG — dated entries (weight, body fat, tape measurements)
@@ -4868,20 +4594,6 @@ function bodyRevise(e,mutate){
   const before=pick(e);mutate(e);
   if(stableStr(before)!==stableStr(pick(e)))
     e.revisions=(Array.isArray(e.revisions)?e.revisions:[]).concat([Object.assign({replacedAt:new Date().toISOString()},before)]);
-}
-function pad2(n){return String(n).padStart(2,'0');}
-function todayStr(){const d=new Date();return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
-function validYMD(s){
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(s||''))return false;
-  const [y,m,d]=s.split('-').map(Number),t=new Date(y,m-1,d);
-  return t.getFullYear()===y&&t.getMonth()===m-1&&t.getDate()===d;
-}
-/* "YYYY-MM-DD" is a calendar date, not an instant: build it in local time
-   (new Date('2026-10-06') is UTC and shows the previous day west of UTC) */
-function fmtBodyDate(ymd,withYear){
-  if(!validYMD(ymd))return ymd||'';
-  const [y,m,d]=ymd.split('-').map(Number);
-  return new Date(y,m-1,d).toLocaleDateString(undefined,withYear===false?{day:'2-digit',month:'short'}:{day:'2-digit',month:'short',year:'numeric'});
 }
 /* positive finite number ≤ max, else null (empty / negative / junk → not measured) */
 function bodyNum(v,max){
@@ -4965,6 +4677,155 @@ function bfCategory(bf,sex){
   if(bf<t[0])label='Athlete';else if(bf<t[1])label='Fitness';else if(bf<t[2])label='Average';else if(bf<t[3])label='Above avg';
   return{label,pct:Math.max(3,Math.min(98,(bf/45)*100))};
 }
+/* ---- BODY LOG screen: list (newest first) + add/edit form, in a modal ---- */
+function bodyLogSummaryHTML(L){
+  const n=loadBodyLog().length;
+  const ms=BODY_M_KEYS.filter(k=>L.measurementsCm[k]!=null).map(k=>`<span class="bl-chip">${BODY_M_LABELS[k]} <b>${L.measurementsCm[k]}</b> cm</span>`).join('');
+  return `<div class="bl-sum">
+    ${ms?`<div class="bl-chips" style="margin-bottom:10px">${ms}</div>`:''}
+    <div class="pf-social" style="margin:0">
+      <button class="pf-social-btn" onclick="bodyLogOpen()">⚖️ Registro corporal <b>${n}</b></button>
+      <button class="pf-social-btn" onclick="bodyLogNew()">＋ Nueva entrada</button>
+    </div>
+  </div>`;
+}
+let blState=null;   // {mode:'list'|'form', editId:string|null}
+function bodyLogOpen(){blState={mode:'list',editId:null};document.getElementById('bodylog-modal').classList.add('show');renderBodyLog();}
+function bodyLogNew(){blState={mode:'form',editId:null};document.getElementById('bodylog-modal').classList.add('show');renderBodyLog();}
+function bodyLogEdit(id){blState={mode:'form',editId:id};renderBodyLog();}
+function bodyLogBackToList(){blState={mode:'list',editId:null};renderBodyLog();}
+function bodyLogClose(){document.getElementById('bodylog-modal').classList.remove('show');blState=null;}
+function renderBodyLog(){
+  const root=document.getElementById('bodylog-modal');if(!root||!blState)return;
+  const head=(title,back)=>`<div class="pw-top">
+      <div class="pw-step-count">${back?`<button class="bl-back" onclick="bodyLogBackToList()">‹</button> `:''}⚖️ ${title}</div>
+      <button class="pw-close" onclick="bodyLogClose()">✕</button>
+    </div>`;
+  if(blState.mode==='form'){
+    const ex=blState.editId?loadBodyLog().find(e=>e.id===blState.editId):null;
+    const e=ex||normBodyEntry({date:todayStr()});
+    const v=x=>x==null?'':x;
+    const num=(id,label,val,unit,max)=>`<div class="bl-field"><label for="${id}">${label}</label><div class="bl-inp"><input id="${id}" class="crew-input" type="number" inputmode="decimal" min="0" max="${max}" step="0.1" value="${v(val)}" placeholder="—"><span>${unit}</span></div></div>`;
+    root.innerHTML=`<div class="pw-card" style="max-width:520px">
+      ${head(ex?'EDITAR ENTRADA':'NUEVA ENTRADA',true)}
+      <div class="pw-body" style="margin-top:16px">
+        <div class="bl-field"><label for="bl-date">Fecha</label><input id="bl-date" class="crew-input" type="date" max="${todayStr()}" value="${esc(e.date)}"></div>
+        <div class="bl-hint">Todo es opcional excepto la fecha: registra solo peso, solo medidas, o lo que tengas.</div>
+        <div class="bl-grid">
+          ${num('bl-weight','Peso',e.weightKg,'kg',500)}
+          ${num('bl-bf','% grasa',e.bodyFatPercent,'%',75)}
+        </div>
+        <div class="bl-field"><label for="bl-method">Método de % grasa</label>
+          <input id="bl-method" class="crew-input" list="bl-methods" maxlength="60" placeholder="ej. báscula bioimpedancia, plicómetro" value="${esc(e.bodyFatMethod||'')}">
+          <datalist id="bl-methods"><option value="báscula bioimpedancia"><option value="plicómetro"><option value="DEXA"><option value="estimación visual"></datalist></div>
+        <div class="bl-sec">Medidas (cm)</div>
+        <div class="bl-grid">${BODY_M_KEYS.map(k=>num('bl-m-'+k,BODY_M_LABELS[k],e.measurementsCm[k],'cm',300)).join('')}</div>
+        <div class="bl-field"><label for="bl-note">Nota</label><textarea id="bl-note" class="crew-input" rows="2" maxlength="300" placeholder="Opcional">${esc(e.note||'')}</textarea></div>
+      </div>
+      <div class="pw-nav">
+        <button class="pw-btn ghost" onclick="bodyLogBackToList()">Cancelar</button>
+        <button class="pw-btn primary" onclick="bodyLogSave()">✓ Guardar</button>
+      </div>
+    </div>`;
+    return;
+  }
+  const list=loadBodyLog();
+  const rows=list.map(e=>{
+    const chips=[];
+    if(e.weightKg!=null)chips.push(`<span class="bl-chip w">⚖️ <b>${e.weightKg}</b> kg</span>`);
+    if(e.bodyFatPercent!=null)chips.push(`<span class="bl-chip">🔬 <b>${e.bodyFatPercent}</b>%${e.bodyFatMethod?` <i>${esc(e.bodyFatMethod)}</i>`:''}</span>`);
+    BODY_M_KEYS.forEach(k=>{if(e.measurementsCm[k]!=null)chips.push(`<span class="bl-chip">${BODY_M_LABELS[k]} <b>${e.measurementsCm[k]}</b> cm</span>`);});
+    return `<div class="bl-row">
+      <div class="bl-row-top"><span class="bl-date">${fmtBodyDate(e.date)}</span>
+        <span class="bl-acts"><button title="Editar" onclick="bodyLogEdit('${e.id}')">✎</button><button class="del" title="Eliminar" onclick="bodyLogDelete('${e.id}')">🗑</button></span></div>
+      <div class="bl-chips">${chips.join('')||'<span class="bl-chip">solo nota</span>'}</div>
+      ${e.note?`<div class="bl-note">${esc(e.note)}</div>`:''}
+    </div>`;
+  }).join('');
+  root.innerHTML=`<div class="pw-card" style="max-width:520px">
+    ${head('REGISTRO CORPORAL',false)}
+    <div class="pw-body" style="margin-top:16px">
+      <button class="rm-btn big" style="width:100%;margin-bottom:14px" onclick="bodyLogNew()">＋ Nueva entrada</button>
+      ${rows||`<div class="rm-empty"><div class="big">⚖️</div>Aún no hay entradas.<br>Registra tu peso o tus medidas para ver tu progreso.</div>`}
+    </div>
+  </div>`;
+}
+/* read a numeric field: '' → null (not measured); junk / ≤0 / over max → error */
+function blField(id,label,max){
+  const raw=(document.getElementById(id).value||'').trim();
+  if(raw==='')return {ok:true,val:null};
+  const n=bodyNum(raw,max);
+  if(n==null){showToast(label+': valor inválido (debe ser mayor que 0 y máx. '+max+')');return {ok:false};}
+  return {ok:true,val:n};
+}
+function bodyLogSave(){
+  const date=(document.getElementById('bl-date').value||'').trim();
+  if(!validYMD(date)){showToast('Elige una fecha válida');return;}
+  if(date>todayStr()){showToast('La fecha no puede ser futura');return;}
+  const w=blField('bl-weight','Peso',500),bf=blField('bl-bf','% grasa',75);
+  if(!w.ok||!bf.ok)return;
+  const ms={};
+  for(const k of BODY_M_KEYS){const r=blField('bl-m-'+k,BODY_M_LABELS[k],300);if(!r.ok)return;ms[k]=r.val;}
+  const method=(document.getElementById('bl-method').value||'').trim()||null;
+  const note=(document.getElementById('bl-note').value||'').trim();
+  if(w.val==null&&bf.val==null&&!note&&BODY_M_KEYS.every(k=>ms[k]==null)){showToast('Agrega al menos un dato');return;}
+  const list=loadBodyLog(), now=new Date().toISOString();
+  const sameDate=list.find(e=>e.date===date&&e.id!==blState.editId);
+  if(blState.editId){
+    const cur=list.find(e=>e.id===blState.editId);if(!cur){bodyLogBackToList();return;}
+    if(sameDate){showToast('Ya hay una entrada en esa fecha — edítala en lugar de duplicarla');return;}
+    // merge onto the stored entry so fields this form doesn't know about survive
+    bodyRevise(cur,c=>Object.assign(c,{date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,
+      measurementsCm:Object.assign({},c.measurementsCm,ms),note,updatedAt:now}));
+    showToast('Entrada actualizada');
+  } else if(sameDate){
+    // same day logged again → update that entry, overwriting only what was filled in
+    bodyRevise(sameDate,x=>{
+      if(w.val!=null)x.weightKg=w.val;
+      if(bf.val!=null){x.bodyFatPercent=bf.val;x.bodyFatMethod=method;}
+      BODY_M_KEYS.forEach(k=>{if(ms[k]!=null)x.measurementsCm[k]=ms[k];});
+      if(note)x.note=note;
+    });
+    sameDate.updatedAt=now;
+    showToast('Ya había una entrada ese día — la actualicé');
+  } else {
+    list.push(normBodyEntry({id:uid(),date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,measurementsCm:ms,note,createdAt:now,updatedAt:now}));
+    showToast('Entrada guardada');
+  }
+  saveBodyLog(list);
+  bodyLogAfterChange();
+  bodyLogBackToList();
+}
+function bodyLogDelete(id){
+  if(!confirm('¿Eliminar esta entrada del registro corporal?'))return;
+  saveBodyLog(loadBodyLog().filter(e=>e.id!==id));
+  bodyLogAfterChange();renderBodyLog();showToast('Entrada eliminada');
+}
+/* weight/body fat feed BMI, gauges, strength ranks and the leaderboard snapshot */
+function bodyLogAfterChange(){
+  renderProfile();
+  if(typeof cloudSyncMe==='function')cloudSyncMe();
+}
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 7 · PERFIL Y COACH
+   ║  Perfil de atleta, perfil del coach, objetivos y notas, rangos por músculo.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+
+/* ══════════════════════════════════════
+   RADAR CHART
+══════════════════════════════════════ */
+/* ══════════════════════════════════════
+   ATHLETE PROFILE — register · CV · edit
+   Empty on first run. A step-by-step wizard collects name, photo,
+   sex, age, height, weight, body fat → saved to localStorage and
+   shown as an editable presentation card. All data is updatable.
+══════════════════════════════════════ */
+const PFKEY='gymAI_profile_v1';
+function loadProfile(){try{return JSON.parse(localStorage.getItem(aKey(PFKEY))||'null');}catch(e){return null;}}
+function saveProfileData(p){localStorage.setItem(aKey(PFKEY),JSON.stringify(p));}
+const SEX_META={male:{ico:'♂',label:'Male'},female:{ico:'♀',label:'Female'}};
 
 let profileForceAuth=false;
 function renderProfile(){
@@ -5342,135 +5203,6 @@ function profileCV(p){
     <button class="pf-cta" style="width:100%;margin-top:22px" onclick="profileWizardStart()">✎ Update my data</button>
   </div>`;
 }
-/* ---- BODY LOG screen: list (newest first) + add/edit form, in a modal ---- */
-function bodyLogSummaryHTML(L){
-  const n=loadBodyLog().length;
-  const ms=BODY_M_KEYS.filter(k=>L.measurementsCm[k]!=null).map(k=>`<span class="bl-chip">${BODY_M_LABELS[k]} <b>${L.measurementsCm[k]}</b> cm</span>`).join('');
-  return `<div class="bl-sum">
-    ${ms?`<div class="bl-chips" style="margin-bottom:10px">${ms}</div>`:''}
-    <div class="pf-social" style="margin:0">
-      <button class="pf-social-btn" onclick="bodyLogOpen()">⚖️ Registro corporal <b>${n}</b></button>
-      <button class="pf-social-btn" onclick="bodyLogNew()">＋ Nueva entrada</button>
-    </div>
-  </div>`;
-}
-let blState=null;   // {mode:'list'|'form', editId:string|null}
-function bodyLogOpen(){blState={mode:'list',editId:null};document.getElementById('bodylog-modal').classList.add('show');renderBodyLog();}
-function bodyLogNew(){blState={mode:'form',editId:null};document.getElementById('bodylog-modal').classList.add('show');renderBodyLog();}
-function bodyLogEdit(id){blState={mode:'form',editId:id};renderBodyLog();}
-function bodyLogBackToList(){blState={mode:'list',editId:null};renderBodyLog();}
-function bodyLogClose(){document.getElementById('bodylog-modal').classList.remove('show');blState=null;}
-function renderBodyLog(){
-  const root=document.getElementById('bodylog-modal');if(!root||!blState)return;
-  const head=(title,back)=>`<div class="pw-top">
-      <div class="pw-step-count">${back?`<button class="bl-back" onclick="bodyLogBackToList()">‹</button> `:''}⚖️ ${title}</div>
-      <button class="pw-close" onclick="bodyLogClose()">✕</button>
-    </div>`;
-  if(blState.mode==='form'){
-    const ex=blState.editId?loadBodyLog().find(e=>e.id===blState.editId):null;
-    const e=ex||normBodyEntry({date:todayStr()});
-    const v=x=>x==null?'':x;
-    const num=(id,label,val,unit,max)=>`<div class="bl-field"><label for="${id}">${label}</label><div class="bl-inp"><input id="${id}" class="crew-input" type="number" inputmode="decimal" min="0" max="${max}" step="0.1" value="${v(val)}" placeholder="—"><span>${unit}</span></div></div>`;
-    root.innerHTML=`<div class="pw-card" style="max-width:520px">
-      ${head(ex?'EDITAR ENTRADA':'NUEVA ENTRADA',true)}
-      <div class="pw-body" style="margin-top:16px">
-        <div class="bl-field"><label for="bl-date">Fecha</label><input id="bl-date" class="crew-input" type="date" max="${todayStr()}" value="${esc(e.date)}"></div>
-        <div class="bl-hint">Todo es opcional excepto la fecha: registra solo peso, solo medidas, o lo que tengas.</div>
-        <div class="bl-grid">
-          ${num('bl-weight','Peso',e.weightKg,'kg',500)}
-          ${num('bl-bf','% grasa',e.bodyFatPercent,'%',75)}
-        </div>
-        <div class="bl-field"><label for="bl-method">Método de % grasa</label>
-          <input id="bl-method" class="crew-input" list="bl-methods" maxlength="60" placeholder="ej. báscula bioimpedancia, plicómetro" value="${esc(e.bodyFatMethod||'')}">
-          <datalist id="bl-methods"><option value="báscula bioimpedancia"><option value="plicómetro"><option value="DEXA"><option value="estimación visual"></datalist></div>
-        <div class="bl-sec">Medidas (cm)</div>
-        <div class="bl-grid">${BODY_M_KEYS.map(k=>num('bl-m-'+k,BODY_M_LABELS[k],e.measurementsCm[k],'cm',300)).join('')}</div>
-        <div class="bl-field"><label for="bl-note">Nota</label><textarea id="bl-note" class="crew-input" rows="2" maxlength="300" placeholder="Opcional">${esc(e.note||'')}</textarea></div>
-      </div>
-      <div class="pw-nav">
-        <button class="pw-btn ghost" onclick="bodyLogBackToList()">Cancelar</button>
-        <button class="pw-btn primary" onclick="bodyLogSave()">✓ Guardar</button>
-      </div>
-    </div>`;
-    return;
-  }
-  const list=loadBodyLog();
-  const rows=list.map(e=>{
-    const chips=[];
-    if(e.weightKg!=null)chips.push(`<span class="bl-chip w">⚖️ <b>${e.weightKg}</b> kg</span>`);
-    if(e.bodyFatPercent!=null)chips.push(`<span class="bl-chip">🔬 <b>${e.bodyFatPercent}</b>%${e.bodyFatMethod?` <i>${esc(e.bodyFatMethod)}</i>`:''}</span>`);
-    BODY_M_KEYS.forEach(k=>{if(e.measurementsCm[k]!=null)chips.push(`<span class="bl-chip">${BODY_M_LABELS[k]} <b>${e.measurementsCm[k]}</b> cm</span>`);});
-    return `<div class="bl-row">
-      <div class="bl-row-top"><span class="bl-date">${fmtBodyDate(e.date)}</span>
-        <span class="bl-acts"><button title="Editar" onclick="bodyLogEdit('${e.id}')">✎</button><button class="del" title="Eliminar" onclick="bodyLogDelete('${e.id}')">🗑</button></span></div>
-      <div class="bl-chips">${chips.join('')||'<span class="bl-chip">solo nota</span>'}</div>
-      ${e.note?`<div class="bl-note">${esc(e.note)}</div>`:''}
-    </div>`;
-  }).join('');
-  root.innerHTML=`<div class="pw-card" style="max-width:520px">
-    ${head('REGISTRO CORPORAL',false)}
-    <div class="pw-body" style="margin-top:16px">
-      <button class="rm-btn big" style="width:100%;margin-bottom:14px" onclick="bodyLogNew()">＋ Nueva entrada</button>
-      ${rows||`<div class="rm-empty"><div class="big">⚖️</div>Aún no hay entradas.<br>Registra tu peso o tus medidas para ver tu progreso.</div>`}
-    </div>
-  </div>`;
-}
-/* read a numeric field: '' → null (not measured); junk / ≤0 / over max → error */
-function blField(id,label,max){
-  const raw=(document.getElementById(id).value||'').trim();
-  if(raw==='')return {ok:true,val:null};
-  const n=bodyNum(raw,max);
-  if(n==null){showToast(label+': valor inválido (debe ser mayor que 0 y máx. '+max+')');return {ok:false};}
-  return {ok:true,val:n};
-}
-function bodyLogSave(){
-  const date=(document.getElementById('bl-date').value||'').trim();
-  if(!validYMD(date)){showToast('Elige una fecha válida');return;}
-  if(date>todayStr()){showToast('La fecha no puede ser futura');return;}
-  const w=blField('bl-weight','Peso',500),bf=blField('bl-bf','% grasa',75);
-  if(!w.ok||!bf.ok)return;
-  const ms={};
-  for(const k of BODY_M_KEYS){const r=blField('bl-m-'+k,BODY_M_LABELS[k],300);if(!r.ok)return;ms[k]=r.val;}
-  const method=(document.getElementById('bl-method').value||'').trim()||null;
-  const note=(document.getElementById('bl-note').value||'').trim();
-  if(w.val==null&&bf.val==null&&!note&&BODY_M_KEYS.every(k=>ms[k]==null)){showToast('Agrega al menos un dato');return;}
-  const list=loadBodyLog(), now=new Date().toISOString();
-  const sameDate=list.find(e=>e.date===date&&e.id!==blState.editId);
-  if(blState.editId){
-    const cur=list.find(e=>e.id===blState.editId);if(!cur){bodyLogBackToList();return;}
-    if(sameDate){showToast('Ya hay una entrada en esa fecha — edítala en lugar de duplicarla');return;}
-    // merge onto the stored entry so fields this form doesn't know about survive
-    bodyRevise(cur,c=>Object.assign(c,{date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,
-      measurementsCm:Object.assign({},c.measurementsCm,ms),note,updatedAt:now}));
-    showToast('Entrada actualizada');
-  } else if(sameDate){
-    // same day logged again → update that entry, overwriting only what was filled in
-    bodyRevise(sameDate,x=>{
-      if(w.val!=null)x.weightKg=w.val;
-      if(bf.val!=null){x.bodyFatPercent=bf.val;x.bodyFatMethod=method;}
-      BODY_M_KEYS.forEach(k=>{if(ms[k]!=null)x.measurementsCm[k]=ms[k];});
-      if(note)x.note=note;
-    });
-    sameDate.updatedAt=now;
-    showToast('Ya había una entrada ese día — la actualicé');
-  } else {
-    list.push(normBodyEntry({id:uid(),date,weightKg:w.val,bodyFatPercent:bf.val,bodyFatMethod:method,measurementsCm:ms,note,createdAt:now,updatedAt:now}));
-    showToast('Entrada guardada');
-  }
-  saveBodyLog(list);
-  bodyLogAfterChange();
-  bodyLogBackToList();
-}
-function bodyLogDelete(id){
-  if(!confirm('¿Eliminar esta entrada del registro corporal?'))return;
-  saveBodyLog(loadBodyLog().filter(e=>e.id!==id));
-  bodyLogAfterChange();renderBodyLog();showToast('Entrada eliminada');
-}
-/* weight/body fat feed BMI, gauges, strength ranks and the leaderboard snapshot */
-function bodyLogAfterChange(){
-  renderProfile();
-  if(typeof cloudSyncMe==='function')cloudSyncMe();
-}
 
 /* ══════════════════════════════════════
    COACH PROFILE — context for the external AI coach (coach-gym Skill)
@@ -5674,107 +5406,6 @@ async function coachSave(){
   }
   profileSnapshot('coach');
   coachClose();renderProfile();showToast('Perfil del coach guardado');
-}
-
-/* ══════════════════════════════════════
-   APPEND-ONLY HISTORY — users/{uid}/data/{name} = {payload, wipedAt, updatedAt}
-   Records are added, never overwritten: each has id + createdAt/updatedAt and
-   a removal is a tombstone (deletedAt). syncList() reads the cloud copy, merges
-   it with the device copy by id (newest updatedAt wins) and writes both, so an
-   offline save is never lost and a failed read never erases the cloud.
-   wipedAt (set by an explicit "clear") drops everything dated before it.
-══════════════════════════════════════ */
-const SYNC_LISTS={
-  journal:{key:JKEY,dateOf:e=>e.addedAt||e.dateISO,sort:(a,b)=>String(b.dateISO||'').localeCompare(String(a.dateISO||''))},
-  profileHistory:{key:'gymAI_hist_profile_v1',dateOf:x=>x.addedAt||x.createdAt},
-  goals:{key:'gymAI_hist_goals_v1',dateOf:x=>x.addedAt||x.createdAt},
-  notes:{key:'gymAI_hist_notes_v1',dateOf:x=>x.addedAt||x.createdAt},
-  routineHistory:{key:'gymAI_hist_routines_v1',dateOf:x=>x.addedAt||x.createdAt}
-};
-/* wipedAt drops records ADDED before the wipe. addedAt = when the record entered the app; legacy
-   records without it fall back to their own date. Backdated records added after a wipe (demo
-   data, imports) must carry addedAt = now, or the wipe would swallow them. */
-function stableStr(o){return JSON.stringify(o,(k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.keys(v).sort().reduce((r,x)=>(r[x]=v[x],r),{}):v);}
-function listLoad(name){try{const a=JSON.parse(localStorage.getItem(aKey(SYNC_LISTS[name].key))||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
-function listLive(name){return listLoad(name).filter(x=>x&&!x.deletedAt);}
-function listSave(name,list){localStorage.setItem(aKey(SYNC_LISTS[name].key),JSON.stringify(list));scheduleSync(name);}
-function listMarkWiped(name){localStorage.setItem(aKey(SYNC_LISTS[name].key+'_wiped'),new Date().toISOString());}
-function mergeById(a,b){
-  const m=new Map(),ts=x=>String(x.updatedAt||x.createdAt||'');
-  a.concat(b).forEach(x=>{if(!x||!x.id)return;const o=m.get(x.id);if(!o||ts(x)>ts(o))m.set(x.id,x);});
-  return [...m.values()];
-}
-const LASTSYNC_KEY='gymAI_lastsync_v1';
-function lastSynced(){try{return JSON.parse(localStorage.getItem(aKey(LASTSYNC_KEY))||'{}')||{};}catch(e){return {};}}
-function markSynced(name){const m=lastSynced();m[name]=new Date().toISOString();localStorage.setItem(aKey(LASTSYNC_KEY),JSON.stringify(m));}
-const _syncTimers={};
-function scheduleSync(name,ms){clearTimeout(_syncTimers[name]);_syncTimers[name]=setTimeout(()=>{syncList(name);},ms==null?1200:ms);}
-async function syncList(name){
-  if(!(window.Cloud&&window.Cloud.getData&&cloudState.user))return;
-  const cfg=SYNC_LISTS[name],uidAt=cloudState.user.uid;
-  let cloud;
-  try{cloud=await window.Cloud.getData(uidAt,name);}catch(e){console.warn('[Sync] read failed',name,e);return;}
-  if(!cloudState.user||cloudState.user.uid!==uidAt)return;   // account switched meanwhile
-  const wk=aKey(cfg.key+'_wiped');
-  const wiped=[(cloud&&cloud.wipedAt)||'',localStorage.getItem(wk)||''].sort().pop();
-  const cl=cloud&&Array.isArray(cloud.value)?cloud.value:[];
-  let merged=mergeById(cl,listLoad(name));
-  if(wiped){merged=merged.filter(x=>String(cfg.dateOf(x)||'')>wiped);localStorage.setItem(wk,wiped);}
-  if(cfg.sort)merged.sort(cfg.sort);
-  localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
-  if(!cloud||JSON.stringify(cl)!==JSON.stringify(merged)||(cloud.wipedAt||'')!==wiped){
-    try{await window.Cloud.setData(uidAt,name,merged,wiped||null);}catch(e){console.warn('[Sync] write failed',name,e);return;}
-  }
-  markSynced(name);
-}
-
-/* ---- dated versions of the athlete profile and the coach profile ---- */
-function profileSnapshot(source){
-  let data;
-  if(source==='coach'){if(coachState.status!=='ready')return;data=normCoach(coachState.data);}
-  else{const p=loadProfile();if(!p)return;data=Object.assign({},p);delete data.photo;}
-  const list=listLoad('profileHistory');
-  const last=list.filter(x=>x.source===source&&!x.deletedAt).sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).pop();
-  if(last&&stableStr(last.data)===stableStr(data))return;
-  const now=new Date().toISOString();
-  list.push({id:uid(),source,createdAt:now,updatedAt:now,data});
-  listSave('profileHistory',list);
-}
-
-/* ---- routine changes: one snapshot per routine per day it changes ---- */
-function routineHistoryTrack(){
-  let signed=false;try{signed=!!cloudState.user;}catch(e){}
-  if(!signed||!Array.isArray(routines))return;
-  const list=listLoad('routineHistory'),now=new Date().toISOString(),today=todayStr(),first=!list.length,last={};
-  list.forEach(h=>{if(!last[h.routineId]||String(h.createdAt)>String(last[h.routineId].createdAt))last[h.routineId]=h;});
-  let changed=false;
-  const add=(r,action)=>{list.push({id:uid(),routineId:r.id,name:r.name,action,date:today,createdAt:now,updatedAt:now,
-    routine:action==='deleted'?null:JSON.parse(JSON.stringify(r))});changed=true;};
-  routines.forEach(r=>{
-    if(!r||!r.id)return;
-    const h=last[r.id];
-    if(!h||h.action==='deleted'){add(r,first?'snapshot':'created');return;}
-    if(h.routine&&stableStr(h.routine)===stableStr(r))return;
-    if(h.date===today){h.routine=JSON.parse(JSON.stringify(r));h.name=r.name;h.updatedAt=now;changed=true;return;}
-    add(r,'edited');
-  });
-  const ids=new Set(routines.map(r=>r&&r.id));
-  Object.values(last).forEach(h=>{if(!ids.has(h.routineId)&&h.action!=='deleted')add({id:h.routineId,name:h.name},'deleted');});
-  if(!changed)return;
-  routineHistoryTrim(list);
-  listSave('routineHistory',list);
-}
-/* Firestore caps a document at 1 MiB: past ~700 KB the oldest snapshots keep
-   their change record (date, action, name) but drop the full routine body */
-function routineHistoryTrim(list){
-  const MAX=700000;let size=JSON.stringify(list).length;if(size<=MAX)return;
-  const latest={};list.forEach(h=>{if(!latest[h.routineId]||String(h.createdAt)>String(latest[h.routineId].createdAt))latest[h.routineId]=h;});
-  const keep=new Set(Object.values(latest)),now=new Date().toISOString();
-  list.slice().sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).some(h=>{
-    if(keep.has(h)||!h.routine)return false;
-    size-=JSON.stringify(h.routine).length;h.routine=null;h.trimmed=true;h.updatedAt=now;
-    return size<=MAX;
-  });
 }
 
 /* ---- goals (with start / target / end dates) and injuries & notes ---- */
@@ -6159,15 +5790,41 @@ function drawMuscleRadar(){
 /* keep the INIT call working — radar now lives in the profile CV */
 function drawRadar(){drawMuscleRadar();}
 
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 8 · SOCIAL
+   ║  Feed, crew, amigos, chats, notificaciones y compartir rutinas.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+
+/* ══════════════════════════════════════
+   FEED INTERACTIONS
+══════════════════════════════════════ */
+function toggleLike(btn){
+  btn.classList.toggle('liked');
+  if(btn.classList.contains('liked')){btn.innerHTML='♥ <span>Liked</span>';btn.style.color='#ff4f2b';}
+  else{btn.innerHTML='♡ <span>Like</span>';btn.style.color='';}
+}
+function openComments(){document.getElementById('comments-overlay').classList.add('show');}
+function sendComment(){
+  const inp=document.getElementById('comment-input');
+  if(!inp.value.trim())return;
+  const list=document.getElementById('comments-list');
+  const div=document.createElement('div');
+  div.style.cssText='background:rgba(255,79,43,0.05);border:1px solid rgba(255,79,43,0.2);border-radius:10px;padding:12px';
+  div.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--blue);margin-bottom:4px">Iván (You)</div><div style="font-size:13px;color:var(--white80)">"${esc(inp.value.trim())}"</div>`;
+  list.appendChild(div);inp.value='';list.scrollTop=list.scrollHeight;
+}
+function cloneRoutine(btn){
+  btn.classList.add('cloned');btn.innerHTML='✓ <span>Cloned!</span>';
+  showToast('Routine template cloned to your library');
+  setTimeout(()=>{btn.classList.remove('cloned');btn.innerHTML='⬇ <span>Clone Routine</span>';},3000);
+}
+
 /* ══════════════════════════════════════
    CREW / CLOUD — auth, crew, shared stats & PRs (Firebase)
    The Firebase module (end of body) exposes window.Cloud and fires
    'cloud-ready' / 'cloud-auth'. Everything degrades gracefully offline.
 ══════════════════════════════════════ */
-let cloudState={ready:false,available:false,user:null,crewId:null,crewName:'',members:[],unsub:null,
-  friendships:[],friendPubs:{},unsubFriends:null,lbMode:'friends',
-  crewInvites:[],unsubCrewInvites:null,
-  notifs:[],unsubNotifs:null};
 let crewAuthMode='signin', crewBusy=false, crewErr='', crewEmailCache='';
 let friendQuery='', friendResults=[], friendBusy=false, friendErr='', friendSearchSeq=0;
 
@@ -6216,24 +5873,6 @@ function cloudSyncMe(){
   // also push to my crew member doc when in a crew
   if(cloudState.crewId){ try{ window.Cloud.syncMyData(cloudState.crewId,cloudState.user.uid,data).catch(()=>{}); }catch(e){} }
 }
-/* back up the full profile to the account (portable across devices) */
-function cloudPushProfile(){
-  if(window.Cloud&&window.Cloud.saveProfile&&cloudState.user){
-    const p=loadProfile(); if(p) try{ window.Cloud.saveProfile(cloudState.user.uid,p).then(()=>markSynced('profile')).catch(()=>{}); }catch(e){}
-  }
-}
-/* back up muscle PRs to the account */
-function cloudPushMusclePRs(){
-  if(window.Cloud&&window.Cloud.saveMusclePRs&&cloudState.user){
-    try{ window.Cloud.saveMusclePRs(cloudState.user.uid,loadMPRs()).catch(()=>{}); }catch(e){}
-  }
-}
-function cloudPushRoutines(){
-  if(window.Cloud&&window.Cloud.saveRoutines&&cloudState.user){
-    try{ window.Cloud.saveRoutines(cloudState.user.uid,routines).then(()=>markSynced('routines')).catch(()=>{}); }catch(e){}
-  }
-}
-function cloudPushJournal(){if(cloudState.user)scheduleSync('journal',300);}
 function cloudSubscribe(){
   if(!window.Cloud||!cloudState.crewId)return;
   window.Cloud.getCrew(cloudState.crewId).then(c=>{cloudState.crewName=c?(c.name||''):'';renderCrew();}).catch(()=>{});
@@ -6256,66 +5895,6 @@ function renderFooter(){
     av.textContent='G'; if(dot)dot.style.background='var(--gray)';
   }
 }
-
-window.addEventListener('cloud-ready',e=>{cloudState.ready=true;cloudState.available=!!(e.detail&&e.detail.available);renderCrew();});
-window.addEventListener('cloud-auth',async e=>{
-  cloudState.ready=true; cloudState.user=e.detail; cloudState.crewId=e.detail?e.detail.crewId:null;
-  profileForceAuth=false;
-  if(cloudState.unsub){try{cloudState.unsub();}catch(_){}cloudState.unsub=null;}
-  cloudState.members=[];
-  if(cloudState.unsubFriends){try{cloudState.unsubFriends();}catch(_){}cloudState.unsubFriends=null;}
-  if(cloudState.unsubCrewInvites){try{cloudState.unsubCrewInvites();}catch(_){}cloudState.unsubCrewInvites=null;}
-  cloudState.friendships=[]; cloudState.friendPubs={}; cloudState.crewInvites=[];
-  coachState={status:'idle',data:null};   // cloud-only: never carried across accounts
-  if(cloudState.user){
-    const uid=cloudState.user.uid;
-    _profileHydrating=true;
-    renderProfile();
-    // always hydrate from Firebase — cloud is the source of truth
-    if(window.Cloud&&window.Cloud.getProfile){
-      try{ const cp=await window.Cloud.getProfile(uid); if(cp)saveProfileData(cp); }catch(_){}
-    }
-    if(window.Cloud&&window.Cloud.getMusclePRs){
-      try{ const mp=await window.Cloud.getMusclePRs(uid); if(mp&&Object.keys(mp).length)saveMPRs(mp); }catch(_){}
-    }
-    if(window.Cloud&&window.Cloud.getRoutines){
-      try{ const cr=await window.Cloud.getRoutines(uid); if(cr&&cr.length){localStorage.setItem(aKey(RKEY),JSON.stringify(cr));} }catch(_){}
-    }
-    routines=loadRoutines();
-    {const rr=localStorage.getItem(aKey(RKEY));if(!rr||rr==='[]')localStorage.setItem(aKey(RKEY),JSON.stringify(routines));}   // keep seeded ids stable across reloads
-    // sessions + append-only histories: device and cloud copies are merged, never replaced
-    for(const name of Object.keys(SYNC_LISTS))await syncList(name);
-    if(window.Cloud&&window.Cloud.getData){
-      try{
-        const cg=await window.Cloud.getData(uid,'exerciseGoals');
-        if(localStorage.getItem(aKey(RGDIRTY)))await cloudPushExGoals();              // unsynced local edits win
-        else if(cg&&cg.value&&typeof cg.value==='object')localStorage.setItem(aKey(RGKEY),JSON.stringify(cg.value));
-        else if(Object.keys(loadGoals()).length)await cloudPushExGoals();             // no cloud doc yet → seed it
-      }catch(_){}
-    }
-    if(window.Cloud&&window.Cloud.getBodyLog){
-      try{
-        const cb=await window.Cloud.getBodyLog(uid);
-        if(localStorage.getItem(aKey(BLDIRTY)))await cloudPushBodyLog();      // unsynced local edits win
-        else if(Array.isArray(cb))localStorage.setItem(aKey(BLKEY),JSON.stringify(cb));
-        else if(loadBodyLog().length)await cloudPushBodyLog();                 // no cloud doc yet → seed it
-      }catch(_){}                                                              // read failed → keep local, push nothing
-    }
-    await coachLoad();
-    profileSnapshot('profile');profileSnapshot('coach');routineHistoryTrack();   // first version of what already exists
-    _profileHydrating=false;
-    if(loadProfile())cloudSyncMe();
-    cloudPushRoutines();
-    if(cloudState.crewId)cloudSubscribe();
-    cloudSubscribeFriends();
-    cloudSubscribeCrewInvites();
-  }
-  // re-render everything that depends on the (now account-scoped) data
-  routines=loadRoutines();
-  renderProfile(); renderCrew(); renderFooter();
-  if(typeof renderRM==='function')renderRM();
-  if(typeof rfSync==='function')rfSync();
-});
 /* ---- friendships: subscribe + derive lists + fetch friend pubs ---- */
 function cloudSubscribeCrewInvites(){
   if(!window.Cloud||!window.Cloud.subscribeCrewInvites||!cloudState.user)return;
@@ -7128,6 +6707,502 @@ function crewOpenMember(uid){
     </div>`;
   openModal('crew-member-modal');
 }
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 9 · INFORMES
+   ║  journalExport (sesión y Super Journal), informe para el coach y respaldo.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+
+/* ══════════════════════════════════════
+   EXPORT / IMPORT
+══════════════════════════════════════ */
+function exportBackup(){
+  const data={app:'GymAI',version:2,type:'backup',exportedAt:new Date().toISOString(),routines,documents:loadDocs(),journal:loadJournal()};
+  downloadFile('gymai-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(data,null,2));
+  showToast('Backup exported · '+routines.length+' routines');
+}
+/* ── COACH EXPORT: journalExport (one session) & Super Journal (everything) ── */
+function exportSessionObj(e){
+  return {id:e.id,date:e.dateISO,routine:e.routineName,workout:e.workoutName,
+    durationMin:Math.max(1,Math.round((e.durationSec||0)/60)),totalVolumeKg:e.totalVolumeKg||0,totalSets:e.totalSets||0,
+    exercises:(e.exercises||[]).map(ex=>({name:ex.name,unit:ex.unit,muscles:ex.muscles||[],
+      sets:(ex.sets||[]).map(st=>({set:st.setNum,target:st.target,actual:st.actual}))}))};
+}
+function activeRoutineName(){const j=loadJournal();return j.length?j[0].routineName:null;}
+function buildJournalExport(sessions,full,period){
+  const j=loadJournal();
+  const out={app:'GymAI',version:2,type:full?'superJournal':'journal',exportedAt:new Date().toISOString(),
+    athlete:coachProfileFull(),
+    bodyLog:full?loadBodyLog().filter(b=>!period||(b.date>=period.from&&b.date<=period.to)):loadBodyLog().slice(0,1),
+    activeRoutine:activeRoutineName(),
+    sessions:sessions.map(exportSessionObj)};
+  if(full){
+    out.routines=routines;
+    out.period=period?{from:period.from,to:period.to}:null;
+    const ss=sessions.slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));
+    out.totals={sessions:ss.length,firstSession:ss.length?ss[0].dateISO:null,lastSession:ss.length?ss[ss.length-1].dateISO:null};
+  }
+  return {journalExport:out};
+}
+function exportSession(id){
+  const e=loadJournal().find(x=>x.id===id);if(!e)return;
+  downloadFile('gymai-journal-'+safeName(e.workoutName)+'-'+String(e.dateISO).slice(0,10)+'.json',JSON.stringify(buildJournalExport([e],false),null,2));
+  showToast('Sesión exportada para el coach');
+}
+function sjPeriod(){
+  const v=(document.getElementById('sj-period')||{}).value||'all';
+  if(v==='all')return null;
+  const to=todayStr();
+  if(v==='custom'){
+    const f=(document.getElementById('sj-from')||{}).value,t=(document.getElementById('sj-to')||{}).value;
+    if(!f||!t||f>t){showToast('Elige un rango de fechas válido');return false;}
+    return {from:f,to:t};
+  }
+  const d=new Date();d.setDate(d.getDate()-7*parseInt(v,10));
+  return {from:d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate()),to};
+}
+function sjPeriodChanged(){
+  const c=document.getElementById('sj-custom');
+  if(c)c.style.display=document.getElementById('sj-period').value==='custom'?'flex':'none';
+}
+function exportSuperJournal(){
+  const period=sjPeriod();if(period===false)return;
+  let j=loadJournal();
+  if(period)j=j.filter(e=>{const d=String(e.dateISO).slice(0,10);return d>=period.from&&d<=period.to;});
+  if(!j.length){showToast('No hay sesiones en ese periodo');return;}
+  downloadFile('gymai-super-journal-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(buildJournalExport(j.slice().reverse(),true,period),null,2));
+  showToast('Super Journal exportado · '+j.length+' sesiones');
+}
+/* ══════════════════════════════════════
+   COACH REPORT — compact summary for the coach-gym Skill
+   {app,type:'coachReport',schemaVersion:1,…}. Built and downloaded on the
+   device only; nothing is sent anywhere. Weights stay in each exercise's own
+   unit (kg | lb | kg_db | lb_db = per dumbbell) and every block says which.
+══════════════════════════════════════ */
+const COACH_REPORT_SCHEMA=1;
+const UNIT_INFO={kg:'kg',lb:'lb',kg_db:'kg por mancuerna',lb_db:'lb por mancuerna'};
+function e1rm(w,r){w=+w||0;r=+r||0;return w>0&&r>0?round1(w*(1+r/30)):0;}   // Epley, in the exercise's unit
+function rsSet(t){return {reps:+t.reps||0,weight:+t.weight||0,rir:t.rir==null?null:+t.rir};}
+/* the plan a session followed: the routine version in force that day (routineHistory), else today's */
+function planFor(routineName,workoutName,dateISO){
+  const day=ymdOf(dateISO);
+  const h=listLive('routineHistory').filter(x=>x.routine&&x.routine.name===routineName&&x.date<=day)
+    .sort((a,b)=>String(a.createdAt).localeCompare(String(b.createdAt))).pop();
+  const r=h?h.routine:routines.find(x=>x.name===routineName);
+  const w=r&&(r.workouts||[]).find(x=>x.name===workoutName);
+  return w?{source:h?'routineHistory':'currentRoutine',exercises:w.exercises||[]}:null;
+}
+function compactRoutine(r){
+  return r?{name:r.name,workouts:(r.workouts||[]).map(w=>({name:w.name,exercises:(w.exercises||[]).map(e=>({
+    name:e.name,unit:e.unit||'kg',restSeconds:e.restSeconds,muscles:e.muscles||[],sets:(e.sets||[]).map(rsSet)}))}))}:null;
+}
+function buildCoachReport(){
+  const now=new Date(),dAgo=n=>{const d=new Date();d.setDate(d.getDate()-n);return d;};
+  const W8=weekStartOf(dAgo(49)),D14=dAgo(14).toISOString(),D112=ymdOf(dAgo(112)),curWeek=weekStartOf(now);
+  const J=loadJournal().slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));   // oldest → newest
+  const inW8=J.filter(s=>weekStartOf(s.dateISO)>=W8);
+  const coach=coachProfileFull();
+
+  // per exercise (name + unit): best set ever, last session, recent trend of the top set vs target
+  const ex={};
+  J.forEach(s=>(s.exercises||[]).forEach(x=>{
+    const sets=(x.sets||[]).filter(t=>t&&t.actual);if(!sets.length)return;
+    const unit=x.unit||'kg',k=x.name+'|'+unit,e=ex[k]||(ex[k]={exercise:x.name,unit,muscles:x.muscles||[],best:null,hist:[]});
+    sets.forEach(t=>{const v=e1rm(t.actual.weight,t.actual.reps);if(v&&(!e.best||v>e.best.e1rm))e.best=Object.assign({date:ymdOf(s.dateISO),e1rm:v},rsSet(t.actual));});
+    const top=sets.reduce((a,t)=>(+t.actual.weight>+a.actual.weight||(+t.actual.weight===+a.actual.weight&&+t.actual.reps>+a.actual.reps))?t:a);
+    e.hist.push({date:ymdOf(s.dateISO),iso:s.dateISO,routine:s.routineName,workout:s.workoutName,sets,top});
+  }));
+  const exercises=Object.values(ex).filter(e=>e.hist.some(h=>weekStartOf(h.iso)>=W8)).map(e=>{
+    const last=e.hist[e.hist.length-1],trend=e.hist.slice(-6).map(h=>({
+      date:h.date,sets:h.sets.length,top:rsSet(h.top.actual),target:rsSet(h.top.target||{}),
+      metTarget:+h.top.actual.reps>=+(h.top.target||{}).reps&&+h.top.actual.weight>=+(h.top.target||{}).weight,
+      e1rm:e1rm(h.top.actual.weight,h.top.actual.reps)}));
+    return {exercise:e.exercise,unit:e.unit,muscles:e.muscles,bestSet:e.best,
+      lastSession:{date:last.date,routine:last.routine,workout:last.workout,sets:last.sets.map(t=>({target:rsSet(t.target||{}),actual:rsSet(t.actual)}))},
+      trend,e1rmChange:trend.length>1?round1(trend[trend.length-1].e1rm-trend[0].e1rm):null};
+  }).sort((a,b)=>String(b.lastSession.date).localeCompare(String(a.lastSession.date)));
+
+  // weekly direct sets per muscle (sets where the muscle is primary) + adherence, last 8 weeks
+  const weeks=[];for(let i=7;i>=0;i--){weeks.push({weekStart:weekStartOf(dAgo(i*7)),sessions:0,directSets:{}});}
+  const wk={};weeks.forEach(w=>wk[w.weekStart]=w);
+  inW8.forEach(s=>{const w=wk[weekStartOf(s.dateISO)];if(!w)return;w.sessions++;
+    (s.exercises||[]).forEach(x=>{const n=(x.sets||[]).filter(t=>t&&t.actual&&+t.actual.reps>0).length;if(!n)return;
+      (x.muscles||[]).filter(m=>m.role==='primary').forEach(m=>{w.directSets[m.key]=(w.directSets[m.key]||0)+n;});});});
+  const planned=coach.availability.daysPerWeek||null,full=weeks.filter(w=>w.weekStart!==curWeek),done=full.reduce((a,w)=>a+w.sessions,0);
+
+  // skipped / incomplete exercises vs the plan of that day
+  const skipped=[],skipCount={};
+  inW8.forEach(s=>{
+    const plan=planFor(s.routineName,s.workoutName,s.dateISO);if(!plan)return;
+    const doneSets={};(s.exercises||[]).forEach(x=>{doneSets[x.name]=(doneSets[x.name]||0)+(x.sets||[]).length;});
+    const sk=[],inc=[];
+    plan.exercises.forEach(pe=>{const d=doneSets[pe.name]||0,pl=(pe.sets||[]).length;
+      if(!d){sk.push(pe.name);skipCount[pe.name]=(skipCount[pe.name]||0)+1;}else if(d<pl)inc.push({exercise:pe.name,setsDone:d,setsPlanned:pl});});
+    if(sk.length||inc.length)skipped.push({date:ymdOf(s.dateISO),routine:s.routineName,workout:s.workoutName,planSource:plan.source,skipped:sk,incomplete:inc});
+  });
+
+  // body: dated series (16 weeks) + weekly average weight (8 weeks)
+  const BL=loadBodyLog().slice().reverse(),blRecent=BL.filter(e=>e.date>=D112);
+  const wAvg={};BL.filter(e=>e.weightKg!=null&&weekStartOf(e.date+'T12:00:00')>=W8).forEach(e=>{const k=weekStartOf(e.date+'T12:00:00');(wAvg[k]=wAvg[k]||[]).push(e.weightKg);});
+  const L=bodyLogLatest();
+
+  // goals: dated goals in force + per-exercise weight goals + the coach-profile goal
+  const exGoals=Object.entries(loadGoals()).map(([k,g])=>{const [rn,wn,en]=k.split('::');
+    const r=routines.find(x=>x.name===rn),w=r&&r.workouts.find(x=>x.name===wn),e=w&&w.exercises.find(x=>x.name===en);
+    return {routine:rn,workout:wn,exercise:en,unit:e?(e.unit||'kg'):null,startWeight:g.startWeight,targetWeight:g.targetWeight,startDate:ymdOf(g.startISO),deadline:ymdOf(g.deadlineISO)};});
+  const notes=listLive('notes');
+  const active=J.length?J[J.length-1].routineName:null;
+
+  return {app:'GymAI',type:'coachReport',schemaVersion:COACH_REPORT_SCHEMA,generatedAt:now.toISOString(),
+    units:{weights:'en la unidad de cada ejercicio (campo unit)',legend:UNIT_INFO,bodyWeight:'kg',measurements:'cm',
+      toKg:'lb × 0.453592; *_db = por mancuerna (×2 para el total)'},
+    window:{weeks8From:W8,sessionDetailFrom:ymdOf(D14),bodySeriesFrom:D112,today:todayStr()},
+    athlete:coach,
+    goals:{coachProfileGoal:coach.goal,active:goalsActive().map(g=>({phase:g.phase,description:g.description,startDate:g.startDate,targetDate:g.targetDate})),
+      exerciseGoals:exGoals},
+    injuriesAndNotes:{activeInjuries:notes.filter(n=>n.type==='injury'&&!n.resolvedDate).map(n=>({date:n.date,text:n.text})),
+      recent:notes.filter(n=>n.date>=D112).map(n=>({date:n.date,type:n.type,text:n.text,resolvedDate:n.resolvedDate}))},
+    body:{latest:L,
+      weight:blRecent.filter(e=>e.weightKg!=null).map(e=>({date:e.date,kg:e.weightKg})),
+      bodyFat:blRecent.filter(e=>e.bodyFatPercent!=null).map(e=>({date:e.date,pct:e.bodyFatPercent,method:e.bodyFatMethod})),
+      measurements:blRecent.filter(e=>BODY_M_KEYS.some(k=>e.measurementsCm[k]!=null)).map(e=>{const m={date:e.date};BODY_M_KEYS.forEach(k=>{if(e.measurementsCm[k]!=null)m[k]=e.measurementsCm[k];});return m;}),
+      weeklyAvgWeightKg:Object.keys(wAvg).sort().map(k=>({weekStart:k,avg:round1(wAvg[k].reduce((a,b)=>a+b,0)/wAvg[k].length),n:wAvg[k].length}))},
+    activeRoutine:compactRoutine(routines.find(r=>r.name===active)||null),
+    exercises,
+    weeklyDirectSetsByMuscle:weeks.map(w=>({weekStart:w.weekStart,partial:w.weekStart===curWeek,sets:w.directSets})),
+    adherence:{plannedPerWeek:planned,weeks:weeks.map(w=>({weekStart:w.weekStart,done:w.sessions,partial:w.weekStart===curWeek})),
+      fullWeeks:full.length,done,planned:planned?planned*full.length:null,pct:planned&&full.length&&inW8.length?Math.round(100*done/(planned*full.length)):null},
+    skippedExercises:{bySession:skipped,countByExercise:skipCount},
+    recentSessions:J.filter(s=>s.dateISO>=D14).reverse().map(s=>({date:s.dateISO,startedAt:s.startedAt||null,routine:s.routineName,workout:s.workoutName,
+      durationMin:Math.max(1,Math.round((s.durationSec||0)/60)),
+      exercises:(s.exercises||[]).map(x=>({name:x.name,unit:x.unit||'kg',sets:(x.sets||[]).map(t=>({set:t.setNum,target:rsSet(t.target||{}),actual:rsSet(t.actual||{}),at:t.at||null}))}))}))
+  };
+}
+function exportCoachReport(){
+  if(!cloudState.user){showToast('Inicia sesión para generar el informe');return;}
+  const r=buildCoachReport();
+  downloadFile('gymai-coach-report-'+todayStr()+'.json',JSON.stringify(r,null,1));
+  showToast('Informe para el coach descargado');
+}
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 10 · AJUSTES Y MANTENIMIENTO
+   ║  Pantalla Datos: borrado por categoría y respaldo.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+/* ══════════════════════════════════════
+   DATOS — clear test data by category (this account only: device + cloud).
+   Shows counts, offers a JSON backup and requires typing BORRAR.
+   Routines are only removed by their own separate option.
+══════════════════════════════════════ */
+function wipeList(name){listMarkWiped(name);localStorage.setItem(aKey(SYNC_LISTS[name].key),'[]');return syncList(name);}
+const DATA_PARTS={
+  journal:{label:'sesiones',count:()=>loadJournal().length,get:()=>loadJournal(),wipe:()=>wipeList('journal')},
+  bodyLog:{label:'registros de peso, % grasa y medidas',count:()=>loadBodyLog().length,get:()=>loadBodyLog(),wipe:()=>saveBodyLog([])},
+  goals:{label:'objetivos',count:()=>listLive('goals').length,get:()=>listLoad('goals'),wipe:()=>wipeList('goals')},
+  notes:{label:'lesiones y notas',count:()=>listLive('notes').length,get:()=>listLoad('notes'),wipe:()=>wipeList('notes')},
+  exerciseGoals:{label:'metas por ejercicio',count:()=>Object.keys(loadGoals()).length,get:()=>loadGoals(),
+    wipe:()=>{localStorage.setItem(aKey(RGKEY),'{}');localStorage.setItem(aKey(RGDIRTY),'1');return cloudPushExGoals();}},
+  musclePRs:{label:'PRs por músculo',count:()=>Object.values(loadMPRs()).reduce((a,v)=>a+(Array.isArray(v)?v.length:0),0),get:()=>loadMPRs(),
+    wipe:async()=>{saveMPRs({});if(window.Cloud&&window.Cloud.saveMusclePRs)await window.Cloud.saveMusclePRs(cloudState.user.uid,{});}},
+  profileHistory:{label:'versiones guardadas del perfil',count:()=>listLive('profileHistory').length,get:()=>listLoad('profileHistory'),wipe:()=>wipeList('profileHistory')},
+  routineHistory:{label:'cambios de rutina registrados',count:()=>listLive('routineHistory').length,get:()=>listLoad('routineHistory'),wipe:()=>wipeList('routineHistory')},
+  routines:{label:'rutinas',count:()=>routines.length,get:()=>routines,wipe:()=>{routines=[];saveRoutines();}}
+};
+const DATA_CATS={
+  sessions:{ico:'📓',label:'Sesiones',desc:'Todo el War Journal: sesiones, series, pesos y RIR.',parts:['journal'],keep:'rutinas, cuerpo, objetivos y notas'},
+  body:{ico:'⚖️',label:'Peso corporal y medidas',desc:'Peso, % de grasa y medidas de tu registro corporal.',parts:['bodyLog'],keep:'todo lo demás'},
+  goalsNotes:{ico:'🎯',label:'Objetivos y notas',desc:'Objetivos con fechas, lesiones/notas y metas por ejercicio.',parts:['goals','notes','exerciseGoals'],keep:'todo lo demás'},
+  allButRoutines:{ico:'🧹',label:'Todo menos mis rutinas',desc:'Sesiones, cuerpo, objetivos, notas, metas, PRs por músculo e historiales.',
+    parts:['journal','bodyLog','goals','notes','exerciseGoals','musclePRs','profileHistory','routineHistory'],keep:'tus rutinas, tu perfil y tu perfil del coach'},
+  routines:{ico:'📋',label:'Mis rutinas',desc:'Solo tus rutinas. Después se cargan las rutinas de ejemplo.',parts:['routines'],keep:'todo lo demás',danger:true}
+};
+let dataCat=null;
+function rmGoData(){dataCat=null;rmView='data';renderRM();}
+function dataPick(k){dataCat=k;renderRM();}
+function viewData(){
+  if(dataCat&&DATA_CATS[dataCat])return viewDataConfirm();
+  const cards=Object.entries(DATA_CATS).map(([k,c])=>{
+    const tags=c.parts.map(p=>`<span class="rm-tag">${DATA_PARTS[p].count()} ${DATA_PARTS[p].label}</span>`).join('');
+    return `<div class="rm-card">
+      <div class="rm-card-icon">${c.ico}</div>
+      <div class="rm-card-title">${c.label}</div>
+      <div class="rm-card-sub">${c.desc}</div>
+      <div class="rm-card-tags">${tags}</div>
+      <div class="rm-card-actions"><button class="${c.danger?'del':''}" onclick="dataPick('${k}')">Borrar…</button></div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="rm-crumb">LIBRARY / DATOS</div>
+    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
+    <div class="rm-title">Datos 🗄</div>
+    <div class="rm-subtitle">Limpia tus datos de prueba. Solo afecta a tu cuenta (este dispositivo y tu nube). Tus rutinas no se tocan salvo que elijas «Mis rutinas».</div>
+    <div class="rm-toolbar">
+      <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
+      <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
+      ${demoHas()?`<button class="rm-btn ghost" onclick="demoSeed()">↻ Recargar datos de prueba</button><button class="rm-btn danger" onclick="demoRemove()">✕ Quitar datos de prueba</button>`:`<button class="rm-btn ghost" onclick="demoSeed()">🧪 Cargar datos de prueba</button>`}
+      <div class="spacer"></div>
+      <button class="rm-btn ghost" onclick="rmGoInspect()">🔍 Modo inspección</button>
+    </div>
+    <div class="rm-grid">${cards}</div>`;
+}
+function viewDataConfirm(){
+  const c=DATA_CATS[dataCat],rows=c.parts.map(p=>({p,n:DATA_PARTS[p].count()})),total=rows.reduce((a,r)=>a+r.n,0);
+  return `
+    <div class="rm-crumb">LIBRARY / DATOS / BORRAR</div>
+    <button class="rm-back" onclick="dataPick(null)">‹ Datos</button>
+    <div class="rm-title">${c.ico} Borrar: ${c.label}</div>
+    <div class="rm-subtitle">Se borra en este dispositivo y en tu nube. No se puede deshacer.</div>
+    <div class="jr-card" style="max-width:560px">
+      <div class="bl-sec" style="margin-top:0">Se borrarán ${total} registro${total!==1?'s':''}</div>
+      <div class="bl-chips" style="margin-bottom:12px">${rows.map(r=>`<span class="bl-chip"><b>${r.n}</b> ${DATA_PARTS[r.p].label}</span>`).join('')}</div>
+      <div class="bl-hint">Se conservan: ${c.keep}.</div>
+      <button class="rm-btn ghost" style="width:100%;margin:6px 0 16px" onclick="dataBackup('${dataCat}')">⤓ Descargar respaldo JSON antes de borrar</button>
+      <div class="bl-field"><label for="data-confirm">Escribe BORRAR para confirmar</label>
+        <input id="data-confirm" class="crew-input" autocomplete="off" autocapitalize="characters" placeholder="BORRAR" oninput="document.getElementById('data-go').disabled=this.value.trim()!=='BORRAR'"></div>
+      <button id="data-go" class="rm-btn danger" style="width:100%;margin-top:8px" disabled onclick="dataWipe()">🗑 Borrar definitivamente</button>
+    </div>`;
+}
+function dataBackup(cat){
+  const parts=cat==='all'?Object.keys(DATA_PARTS):DATA_CATS[cat].parts,data={};
+  parts.forEach(p=>{data[p]=DATA_PARTS[p].get();});
+  if(cat==='all'){data.profile=loadProfile();data.coachProfile=coachState.status==='ready'?coachState.data:null;}
+  downloadFile('gymai-respaldo-'+cat+'-'+todayStr()+'.json',JSON.stringify({app:'GymAI',type:'dataBackup',category:cat,createdAt:new Date().toISOString(),data},null,1));
+  showToast('Respaldo descargado');
+}
+async function dataWipe(){
+  const inp=document.getElementById('data-confirm');
+  if(!inp||inp.value.trim()!=='BORRAR'){showToast('Escribe BORRAR para confirmar');return;}
+  if(!cloudState.user||!DATA_CATS[dataCat])return;
+  const c=DATA_CATS[dataCat],uidAt=cloudState.user.uid,btn=document.getElementById('data-go');
+  btn.disabled=true;btn.textContent='Borrando…';
+  for(const p of c.parts){try{await DATA_PARTS[p].wipe();}catch(e){console.warn('[Data] wipe failed',p,e);}}
+  if(!cloudState.user||cloudState.user.uid!==uidAt)return;
+  dataCat=null;renderRM();renderProfile();
+  if(typeof cloudSyncMe==='function')cloudSyncMe();
+  if(typeof rfSync==='function')rfSync();
+  showToast(c.label+': borrado');
+}
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 11 · HERRAMIENTAS (temporales)
+   ║  Datos de prueba y modo inspección. Pensado para quitarse fácil.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+
+/* ══════════════════════════════════════
+   DEMO DATA — ~9 weeks of realistic history to try the coach Skill
+   (Datos ▸ Cargar datos de prueba). Everything added is tagged demo:true /
+   id "demo-…", so «Quitar datos de prueba» removes exactly that and never
+   touches your own records. Deterministic (seeded) so reports are reproducible.
+══════════════════════════════════════ */
+const DEMO_ROUTINE='Upper/Lower Hipertrofia (demo)';
+function isDemo(x){return !!x&&(x.demo===true||String(x.id||'').indexOf('demo-')===0||String(x.routineId||'').indexOf('demo-')===0);}
+function demoHas(){try{return routines.some(isDemo)||loadJournal().some(isDemo)||listLoad('goals').some(isDemo);}catch(e){return false;}}
+function demoPlan(version){
+  // name, unit, muscles ("*" = secondary), sets, reps, rir, base weight, +weight every 2 weeks, rest
+  const E=(name,unit,m,sets,reps,rir,w,inc,rest)=>({name,unit,sets,reps,rir,w,inc,rest,
+    muscles:m.split(',').map(k=>({key:k.replace('*',''),role:k.endsWith('*')?'secondary':'primary'}))});
+  return [
+    {key:'ua',name:'Upper A',day:0,ex:[E('Press banca con barra','kg','chest,triceps*,shoulders*',4,8,2,77.5,2.5,150),
+      E('Remo con barra','kg','upperback,lats*,biceps*',4,8,2,70,2.5,120),E('Press militar con mancuernas','kg_db','shoulders,triceps*',3,10,2,20,1,120),
+      E('Jalón al pecho','kg','lats,biceps*',3,10,2,60,2.5,90),E('Elevaciones laterales','kg_db','shoulders',3,15,1,9,0.5,60),
+      E('Curl con barra Z','kg','biceps',3,12,1,30,1.25,60)]},
+    {key:'la',name:'Lower A',day:1,ex:[E('Sentadilla','kg','quads,glutes*',4,6,2,100,2.5,180),
+      E('Peso muerto rumano','kg','hamstrings,glutes*',3,8,2,90,2.5,150),E('Prensa','kg','quads',3,12,2,180,5,120),
+      E('Curl femoral tumbado','kg','hamstrings',3,12,1,45,1.25,75),E('Elevación de talones de pie','kg','calves',4,15,1,80,2.5,60)]},
+    {key:'ub',name:'Upper B',day:3,ex:[E('Press inclinado con mancuernas','kg_db','chest,shoulders*',4,10,2,28,1,120),
+      E('Dominadas','kg','lats,biceps*',4,7,2,0,0,120),E('Press militar con barra','kg','shoulders,triceps*',3,8,2,45,1.25,120),
+      E('Remo en polea baja','lb','upperback,lats*',3,12,2,140,5,90),E('Elevaciones laterales en polea','kg','shoulders',3,15,1,7.5,0,60),
+      E('Extensión de tríceps en polea','kg','triceps',3,12,1,25,1.25,60)]},
+    {key:'lb',name:'Lower B',day:4,ex:[E('Peso muerto convencional','kg','hamstrings,glutes*,upperback*',3,5,2,130,2.5,180),
+      version===1?E('Extensión de cuádriceps','kg','quads',3,15,1,55,2.5,75):E('Sentadilla búlgara','kg_db','quads,glutes*',3,10,2,16,1,120),
+      E('Hip thrust','kg','glutes,hamstrings*',3,10,2,100,5,120),E('Curl femoral sentado','kg','hamstrings',3,12,1,40,1.25,75),
+      E('Elevación de talones sentado','kg','calves',3,15,1,40,2.5,60)]}
+  ];
+}
+async function demoSeed(){
+  if(!cloudState.user){showToast('Inicia sesión primero');return;}
+  if(demoHas()){
+    if(!confirm('Ya hay datos de prueba. ¿Recargarlos desde cero? Se quitan los de prueba y se vuelven a cargar; tus datos reales no se tocan.'))return;
+    if(!(await demoRemove(true)))return;
+  }else if(!confirm('¿Cargar ~9 semanas de datos de prueba (rutina, sesiones, peso corporal, objetivos y notas)? Quedan marcados como prueba y puedes quitarlos después sin tocar tus datos.'))return;
+  let seed=20261007;const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return ((t^t>>>14)>>>0)/4294967296;};
+  const today=new Date();today.setHours(0,0,0,0);
+  const mon0=new Date(today);mon0.setDate(mon0.getDate()-((mon0.getDay()+6)%7)-56);   // Monday, 8 weeks ago
+  const dayOf=(w,d,h,m)=>{const x=new Date(mon0);x.setDate(x.getDate()+w*7+d);x.setHours(h||0,m||0,0,0);return x;};
+  const ymd=d=>ymdOf(d),iso=d=>d.toISOString();
+  const editDate=dayOf(4,2,12),injury=dayOf(6,1),healed=dayOf(8,0),DELOAD=5;
+  const SKIP=new Set(['1:lb','3:la','5:ub','7:lb']);
+  const r5=(v,u,base)=>{const st=u==='lb'?5:u==='kg_db'?1:(base||v)>=40?2.5:1.25;return Math.round(v/st)*st;};   // real plate jumps
+  const tw=(e,w)=>{if(!e.w)return 0;let v=e.w+e.inc*Math.floor(w/2);if(w===DELOAD)v*=0.9;return r5(v,e.unit,e.w);};
+  const tr=(e,w)=>e.w?e.reps:e.reps+Math.floor(w/3);
+  const toRoutine=(version,w)=>({id:'demo-r1',name:DEMO_ROUTINE,icon:'🧪',complexity:2,demo:true,
+    workouts:demoPlan(version).map(wk=>({id:'demo-w-'+wk.key,name:wk.name,exercises:wk.ex.map((e,i)=>({id:'demo-e-'+wk.key+i,name:e.name,meta:'',unit:e.unit,
+      restSeconds:e.rest,muscles:e.muscles,sets:Array.from({length:e.sets},()=>({reps:tr(e,w),rir:e.rir,weight:tw(e,w)}))}))}))});
+  // sessions
+  const sessions=[];
+  for(let w=0;w<9;w++)for(const wk of demoPlan(2)){
+    const start=dayOf(w,wk.day,18,25+Math.floor(rnd()*35));
+    if(start>=today||SKIP.has(w+':'+wk.key))continue;
+    const plan=start<editDate?demoPlan(1).find(x=>x.key===wk.key):wk;
+    let t=start.getTime();const exs=[];
+    plan.ex.forEach((e,ei)=>{
+      const isOHP=/Press militar/.test(e.name);
+      if(isOHP&&w===6)return;                                    // shoulder flare-up: skipped
+      if(/laterales/.test(e.name)&&rnd()<0.22)return;            // sometimes dropped at the end
+      let W=tw(e,w);if(isOHP&&w===7)W=r5(W*0.85,e.unit);
+      const R=tr(e,w),RIR=w===DELOAD?Math.min(10,e.rir+2):e.rir,sets=[];
+      for(let i=0;i<e.sets;i++){
+        t+=(i?e.rest:90)*1000+Math.floor(rnd()*40000);
+        let reps=R;const q=rnd();
+        if(i===e.sets-1&&q<0.35)reps=R-1;else if(q>0.9)reps=R+1;
+        if(ei===0&&wk.key==='ua'&&w>=6&&i>=e.sets-2)reps=R-(i===e.sets-1?2:1);   // bench press stalls late in the cut
+        const rir=Math.max(0,Math.min(10,RIR+(reps<R?-1:reps>R?1:0)));
+        sets.push({setNum:i+1,target:{reps:R,weight:W,rir:RIR},actual:{reps,weight:W,rir},at:new Date(t).toISOString()});
+      }
+      exs.push({exId:'demo-e-'+wk.key+ei,name:e.name,unit:e.unit,muscles:e.muscles,sets});
+    });
+    const end=new Date(t+120000);
+    const vol=Math.round(exs.reduce((a,x)=>a+x.sets.reduce((b,st)=>b+toKg(st.actual.weight,x.unit)*st.actual.reps,0),0));
+    sessions.push({id:'demo-s-'+w+'-'+wk.key,dateISO:iso(end),startedAt:iso(start),routineName:DEMO_ROUTINE,workoutName:wk.name,
+      durationSec:Math.round((end-start)/1000),totalVolumeKg:vol,totalSets:exs.reduce((a,x)=>a+x.sets.length,0),exercises:exs,demo:true});
+  }
+  // body log: 3 weigh-ins a week (cutting ~0.35 kg/week), body fat every 2 weeks, tape every 4 weeks
+  const body=[];
+  for(let w=0;w<9;w++)[0,2,5].forEach(d=>{
+    const day=dayOf(w,d,7,10);if(day>=today)return;const n=w*7+d;
+    const e={id:'demo-b-'+n,date:ymd(day),weightKg:Math.round((82.4-0.05*n+(rnd()-0.5)*0.5)*10)/10,bodyFatPercent:null,bodyFatMethod:null,
+      measurementsCm:{},note:'',createdAt:iso(day),updatedAt:iso(day),demo:true};
+    if(d===0&&w%2===0){e.bodyFatPercent=Math.round((18.6-0.21*w)*10)/10;e.bodyFatMethod='báscula bioimpedancia';}
+    if(d===0&&w%4===0)e.measurementsCm={waist:87-0.32*w,chest:104-0.06*w,arm:37.5-0.03*w,thigh:59-0.12*w,hips:98-0.18*w,neck:39-0.03*w};
+    Object.keys(e.measurementsCm).forEach(k=>{e.measurementsCm[k]=Math.round(e.measurementsCm[k]*10)/10;});
+    body.push(normBodyEntry(e));
+  });
+  const now=iso(new Date()),d0=dayOf(0,0,9);
+  const stamp=a=>a.forEach(x=>{x.addedAt=now;});
+  const ago=n=>{const x=new Date(today);x.setDate(x.getDate()+n);return ymd(x);};
+  const goals=[
+    {id:'demo-g0',phase:'bulking',description:'Volumen limpio',startDate:ago(-150),targetDate:null,endDate:ymd(d0),status:'replaced',createdAt:iso(new Date(today.getTime()-150*864e5)),updatedAt:iso(d0),demo:true},
+    {id:'demo-g1',phase:'cutting',description:'Bajar a 15% de grasa manteniendo la fuerza',startDate:ymd(d0),targetDate:ago(28),endDate:null,status:'active',createdAt:iso(d0),updatedAt:iso(d0),demo:true},
+    {id:'demo-g2',phase:null,description:'Press banca 90 kg × 6',startDate:ymd(d0),targetDate:ago(56),endDate:null,status:'active',createdAt:iso(d0),updatedAt:iso(d0),demo:true}];
+  const notes=[
+    {id:'demo-n1',type:'note',date:ymd(dayOf(DELOAD,0)),text:'Semana de descarga: pesos ~10% abajo y RIR +2',resolvedDate:null,createdAt:iso(dayOf(DELOAD,0,20)),updatedAt:iso(dayOf(DELOAD,0,20)),demo:true},
+    {id:'demo-n2',type:'injury',date:ymd(injury),text:'Molestia en hombro derecho al hacer press militar',resolvedDate:healed<today?ymd(healed):null,createdAt:iso(dayOf(6,1,21)),updatedAt:iso(healed<today?healed:dayOf(6,1,21)),demo:true},
+    {id:'demo-n3',type:'note',date:ymd(dayOf(7,2)),text:'Dormí mal toda la semana, rendimiento bajo',resolvedDate:null,createdAt:iso(dayOf(7,2,22)),updatedAt:iso(dayOf(7,2,22)),demo:true},
+    {id:'demo-n4',type:'injury',date:ago(-4),text:'Leve molestia en rodilla izquierda en sentadilla búlgara',resolvedDate:null,createdAt:iso(new Date(today.getTime()-4*864e5)),updatedAt:iso(new Date(today.getTime()-4*864e5)),demo:true}];
+  const rh=[
+    {id:'demo-rh1',routineId:'demo-r1',name:DEMO_ROUTINE,action:'created',date:ymd(d0),createdAt:iso(d0),updatedAt:iso(d0),routine:toRoutine(1,0),demo:true},
+    {id:'demo-rh2',routineId:'demo-r1',name:DEMO_ROUTINE,action:'edited',date:ymd(editDate),createdAt:iso(editDate),updatedAt:iso(editDate),routine:toRoutine(2,4),demo:true}];
+  stamp(sessions);stamp(goals);stamp(notes);stamp(rh);
+  // write through the normal save paths (device + cloud, merged)
+  listSave('routineHistory',listLoad('routineHistory').concat(rh));
+  routines.push(toRoutine(2,8));saveRoutines();
+  saveJournal(loadJournal().concat(sessions).sort((a,b)=>String(b.dateISO).localeCompare(String(a.dateISO))));
+  const bl=loadBodyLog(),taken=new Set(bl.map(e=>e.date));saveBodyLog(bl.concat(body.filter(e=>!taken.has(e.date))));
+  listSave('goals',listLoad('goals').concat(goals));
+  listSave('notes',listLoad('notes').concat(notes));
+  const g=loadGoals();g[DEMO_ROUTINE+'::Upper A::Press banca con barra']={startWeight:77.5,targetWeight:90,startISO:iso(d0),deadlineISO:iso(new Date(today.getTime()+56*864e5)),demo:true};saveGoals(g);
+  // coach profile: filled only when it is still empty, so a real one is never overwritten
+  if(coachState.status==='ready'&&window.Cloud&&window.Cloud.saveCoachProfile){
+    const c=normCoach(coachState.data);
+    if(!c.goal.phase&&!c.availability.daysPerWeek){
+      const data=normCoach(Object.assign({},c,{goal:{phase:'cutting',aestheticGoal:'hombros más anchos y cintura marcada',priorityMuscles:['shoulders','lats']},
+        experience:'intermedio, 3 años',availability:{daysPerWeek:4,sessionMinutes:75},equipment:'gimnasio completo',
+        preferences:{liked:['press banca','dominadas'],avoided:['sentadilla frontal']},nutrition:{calories:2300,proteinG:170}}));
+      window.Cloud.saveCoachProfile(cloudState.user.uid,data).then(()=>{coachState={status:'ready',data};markSynced('coachProfile');profileSnapshot('coach');renderProfile();}).catch(()=>{});
+    }
+  }
+  renderRM();renderProfile();if(typeof rfSync==='function')rfSync();
+  showToast('Datos de prueba cargados · '+sessions.length+' sesiones');
+}
+/* read cloud → merge → drop matching items → write both (removal can't go through the additive merge) */
+async function purgeList(name,pred){
+  const cfg=SYNC_LISTS[name],uidAt=cloudState.user.uid;
+  clearTimeout(_syncTimers[name]);
+  let cloud;try{cloud=await window.Cloud.getData(uidAt,name);}catch(e){return false;}
+  const cl=cloud&&Array.isArray(cloud.value)?cloud.value:[];
+  const merged=mergeById(cl,listLoad(name)).filter(x=>!pred(x));
+  if(cfg.sort)merged.sort(cfg.sort);
+  localStorage.setItem(aKey(cfg.key),JSON.stringify(merged));
+  try{await window.Cloud.setData(uidAt,name,merged,(cloud&&cloud.wipedAt)||localStorage.getItem(aKey(cfg.key+'_wiped'))||null);markSynced(name);}catch(e){return false;}
+  return true;
+}
+async function demoRemove(quiet){
+  if(!cloudState.user)return false;
+  if(!quiet&&!confirm('¿Quitar todos los datos de prueba? Tus datos reales no se tocan.'))return false;
+  routines=routines.filter(r=>!isDemo(r));saveRoutines();
+  for(const n of ['journal','goals','notes','routineHistory']){
+    if(!(await purgeList(n,isDemo))){showToast('Sin conexión: no se pudo quitar todo, intenta de nuevo');renderRM();return false;}
+  }
+  saveBodyLog(loadBodyLog().filter(e=>!isDemo(e)));
+  const g=loadGoals();Object.keys(g).forEach(k=>{if(g[k]&&g[k].demo)delete g[k];});saveGoals(g);
+  renderRM();renderProfile();if(typeof rfSync==='function')rfSync();
+  if(!quiet)showToast('Datos de prueba eliminados');
+  return true;
+}
+
+/* ══════════════════════════════════════
+   INSPECTION MODE (temporary) — read-only check that everything is being saved.
+   To remove: delete this block, the `inspect:viewInspect` entry in renderRM()
+   and the «Modo inspección» button in viewData().
+══════════════════════════════════════ */
+function rmGoInspect(){rmView='inspect';renderRM();}
+function viewInspect(){
+  const J=loadJournal(),BL=loadBodyLog(),sync=lastSynced(),t=iso=>iso?fmtDate(iso,true):'—',
+    tc=iso=>{if(!iso)return '—';const d=new Date(iso);return ymdOf(d)+' '+pad2(d.getHours())+':'+pad2(d.getMinutes());};
+  const maxTs=arr=>arr.map(x=>String(x||'')).filter(Boolean).sort().pop()||null;
+  const sets=[];J.forEach(s=>(s.exercises||[]).forEach(x=>(x.sets||[]).forEach(st=>sets.push({at:st.at||s.dateISO,ex:x.name,unit:unitLabel(x.unit),a:st.actual||{}}))));
+  sets.sort((a,b)=>String(b.at).localeCompare(String(a.at)));
+  const ts=e=>e.updatedAt||e.createdAt||(e.date?e.date+'T00:00:00':null);
+  const wt=BL.filter(e=>e.weightKg!=null),bf=BL.filter(e=>e.bodyFatPercent!=null),ms=BL.filter(e=>BODY_M_KEYS.some(k=>e.measurementsCm[k]!=null));
+  const goals=listLive('goals').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const notes=listLive('notes').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const rh=listLive('routineHistory').sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const ph=listLive('profileHistory').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
+  const exG=Object.entries(loadGoals());
+  const cats=[
+    {ico:'📓',name:'Sesiones',n:J.length,doc:'journal',local:maxTs(J.map(e=>e.dateISO)),
+      rows:J.slice(0,5).map(e=>[tc(e.dateISO),`${esc(e.routineName)} · ${esc(e.workoutName)} · ${(e.exercises||[]).reduce((a,x)=>a+(x.sets||[]).length,0)} series`])},
+    {ico:'🏋️',name:'Series',n:sets.length,doc:'journal',local:sets[0]&&sets[0].at,
+      rows:sets.slice(0,5).map(x=>[tc(x.at),`${esc(x.ex)} · ${x.a.weight} ${x.unit} × ${x.a.reps} · RIR ${x.a.rir}`])},
+    {ico:'⚖️',name:'Peso corporal',n:wt.length,doc:'bodyLog',local:maxTs(wt.map(ts)),rows:wt.slice(0,5).map(e=>[e.date,`${e.weightKg} kg${e.revisions?` · ${e.revisions.length} corrección(es)`:''}`])},
+    {ico:'🔬',name:'% de grasa',n:bf.length,doc:'bodyLog',local:maxTs(bf.map(ts)),rows:bf.slice(0,5).map(e=>[e.date,`${e.bodyFatPercent}%${e.bodyFatMethod?' · '+esc(e.bodyFatMethod):''}`])},
+    {ico:'📏',name:'Medidas',n:ms.length,doc:'bodyLog',local:maxTs(ms.map(ts)),
+      rows:ms.slice(0,5).map(e=>[e.date,BODY_M_KEYS.filter(k=>e.measurementsCm[k]!=null).map(k=>`${BODY_M_LABELS[k]} ${e.measurementsCm[k]}`).join(' · ')])},
+    {ico:'🎯',name:'Objetivos',n:goals.length,doc:'goals',local:maxTs(goals.map(g=>g.updatedAt)),
+      rows:goals.slice(0,5).map(g=>[g.startDate,`${g.endDate?'✓ ':'● '}${g.phase?COACH_LABELS[g.phase]+' · ':''}${esc(g.description)}`])},
+    {ico:'🏁',name:'Metas por ejercicio',n:exG.length,doc:'exerciseGoals',local:null,
+      rows:exG.slice(0,5).map(([k,g])=>[ymdOf(g.startISO),`${esc(k.split('::').pop())} · ${g.startWeight}→${g.targetWeight} · límite ${ymdOf(g.deadlineISO)}`])},
+    {ico:'🩹',name:'Lesiones y notas',n:notes.length,doc:'notes',local:maxTs(notes.map(x=>x.updatedAt)),
+      rows:notes.slice(0,5).map(x=>[x.date,`${x.type==='injury'?'🩹':'📝'} ${esc(x.text.length>60?x.text.slice(0,60)+'…':x.text)}${x.resolvedDate?' · resuelta':''}`])},
+    {ico:'📋',name:'Rutinas',n:routines.length,doc:'routines',local:rh[0]&&rh[0].updatedAt,
+      rows:routines.slice(0,5).map(r=>{const h=rh.find(x=>x.routineId===r.id);return [h?h.date:'—',`${esc(r.name)} · ${(r.workouts||[]).length} workouts${h?' · '+h.action:''}`];})},
+    {ico:'🕓',name:'Cambios de rutina',n:rh.length,doc:'routineHistory',local:rh[0]&&rh[0].updatedAt,rows:rh.slice(0,5).map(h=>[h.date,`${h.action} · ${esc(h.name||'')}${h.trimmed?' · (resumido)':''}`])},
+    {ico:'👤',name:'Versiones del perfil',n:ph.length,doc:'profileHistory',local:ph[0]&&ph[0].createdAt,rows:ph.slice(0,5).map(h=>[tc(h.createdAt),h.source==='coach'?'Perfil del coach':'Perfil de atleta'])}
+  ];
+  const cards=cats.map(c=>`<div class="jr-card">
+      <div class="jr-head" style="margin-bottom:8px"><div><div class="jr-title">${c.ico} ${c.name}</div>
+        <div class="jr-sub">Dispositivo: ${t(c.local)} · Nube: ${t(sync[c.doc])}</div></div>
+        <div class="jr-stats"><div class="jr-stat"><div class="jr-stat-val">${c.n}</div><div class="jr-stat-lbl">registros</div></div></div></div>
+      ${c.rows.length?c.rows.map(r=>`<div class="jr-set-line" style="grid-template-columns:118px 1fr"><span>${esc(r[0]||'—')}</span><span>${r[1]}</span></div>`).join(''):'<div class="bl-hint" style="margin:0">Sin registros.</div>'}
+    </div>`).join('');
+  return `
+    <div class="rm-crumb">LIBRARY / DATOS / INSPECCIÓN</div>
+    <button class="rm-back" onclick="rmGoData()">‹ Datos</button>
+    <div class="rm-title">Modo inspección 🔍</div>
+    <div class="rm-subtitle">Conteo y últimos 5 registros de cada tipo. «Nube» es la última vez que se guardó correctamente en tu cuenta.</div>
+    <div class="rm-toolbar"><button class="rm-btn ghost" onclick="renderRM()">↻ Actualizar</button></div>
+    ${cards}`;
+}
+/* ══════════ end INSPECTION MODE ══════════ */
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 12 · ARRANQUE
+   ║  Primer render, base científica y service worker.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
 
 /* ══════════════════════════════════════
    INIT
