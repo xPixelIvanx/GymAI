@@ -2,6 +2,17 @@
 
 Qué cambió en GymAI, por fase. El detalle de formatos está en `DATA_GUIDE.md`.
 
+## Fase 4 — Documentación
+- `DATA_GUIDE.md` al día: versiones de cada formato (`coachReport` v1 y v2), bloque `program` del informe con su cálculo, informe del programa, ejemplo real de archivo de programa y de informe con programa (generados por la app, no escritos a mano), qué se movió o quitó en el orden (sección 12) y límites nuevos.
+- Este changelog.
+
+## Fase 3 — Informe
+- **`coachReport` pasa a `schemaVersion: 2`** (58a7f78): todos los campos de v1 igual, más el bloque `program` (`null` si no hay programa activo) con metas y avance, nutrición e historial, checkpoints, últimos ajustes y `planVsActual` (sesiones planeadas vs hechas por semana, cambio de peso y ritmo semanal, avance esperado vs real por meta). Más `window.scope/from/to`.
+- **Informe del programa** (d753e05): botón «⤓ Informe del programa» en el detalle de un programa (no en planeados). Mismo formato, limitado a `[startDate, min(endDate, hoy)]`; si ya terminó o se canceló trae `finalSummary`.
+- El archivo del informe se escribe compacto (sin sangrías): con 9 semanas de datos pesa ~65–70 KB en vez de ~115–125 KB. No se acortaron campos de v1.
+- Ayudas con límite de fecha para calcular un programa ya terminado (0d56c99); sin el parámetro nuevo se comportan igual que antes.
+- Verificado: sin programa el informe es igual a v1 salvo las claves nuevas; el resto de exportaciones, importaciones y sincronización quedaron idénticas.
+
 ## Fase 2 — Programas
 - **`data/programs`** (aec7a3b, f61441a, 8b8cf85): plan con ventana de fechas, se combina por `id` como los demás historiales.
   - Un solo programa activo; activar uno cierra el anterior y lo anota en la bitácora de ambos.

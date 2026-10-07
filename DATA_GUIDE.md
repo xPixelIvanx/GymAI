@@ -7,12 +7,13 @@ Esta guía explica cómo GymAI guarda los datos de entrenamiento y cómo se cone
 | Sentido | Archivo | Formato | Cómo lo obtiene el usuario |
 |---|---|---|---|
 | La Skill **lee** | **Informe para el coach** | `coachReport` (sección 6) | Datos ▸ Exportar y respaldo ▸ 📋 Informe para el coach |
+| La Skill **lee** | **Informe del programa** (programa activo, terminado o cancelado) | `coachReport` con `window.scope: "program"` (sección 6) | Programas ▸ abrir el programa ▸ ⤓ Informe del programa |
 | La Skill **lee** | Super Journal / una sesión | `journalExport` (sección 5) | Datos ▸ Super Journal · o ⤓ dentro de una sesión |
 | La Skill **lee** | Respaldo completo | `dataBackup` | Datos ▸ ⤓ Respaldo completo |
 | La Skill **escribe** | **Programa** (con sus rutinas) | `program` (sección 7) | Programas ▸ ⤒ Importar programa |
 | La Skill **escribe** | Una rutina suelta | `routine` (`ROUTINE_TEMPLATE.json`) | Routine Manager ▸ ⤒ Import Routine |
 
-Flujo normal: el usuario sube el **informe**; la Skill lo analiza y le devuelve un **programa** (un `.json` con metas, nutrición, checkpoints y las rutinas); el usuario lo importa, revisa el resumen y lo activa. Al día siguiente la Skill vuelve a leer un informe nuevo para ver cómo va.
+Flujo normal: el usuario sube el **informe**; la Skill lo analiza y le devuelve un **programa** (un `.json` con metas, nutrición, checkpoints y las rutinas); el usuario lo importa, revisa el resumen y lo activa. Después la Skill vuelve a leer un informe nuevo para ver cómo va: con un programa activo, el informe trae el bloque `program` (metas, nutrición, checkpoints, ajustes y **plan vs. realizado**), y al terminar el programa el **informe del programa** incluye un resumen final.
 
 **La app no guarda nada en servidores de la Skill**: todo pasa por archivos que el usuario descarga y sube a mano.
 
@@ -82,7 +83,7 @@ Las colecciones sociales (`crews`, `friendships`, `chats`, `notifications`…) n
    - Cambiar calorías, proteína o grasa **agrega** una entrada a `nutrition.history` y a `adjustments`; nunca sobrescribe.
    - Los ajustes y la nutrición solo se agregan. Eliminar un programa es una lápida (`deletedAt`).
 10. **Fuente única de los objetivos vigentes.**
-    - Con un programa activo, **sus `goals` son los objetivos vigentes** (Perfil y `coachReport.goals.active`), aunque estén vacíos.
+    - Con un programa activo, **sus `goals` son los objetivos vigentes** (Perfil y `coachReport.goals.active`, además del bloque `program.goals`), aunque estén vacíos.
     - Sin programa activo, lo son los de `data/goals`.
     - Nunca se copian de uno a otro. El objetivo del perfil del coach (`athlete.goal`) es solo contexto.
 
@@ -272,22 +273,47 @@ Siempre va envuelto en `journalExport`. Tiene dos tipos.
 
 ## 6. `coachReport` (informe compacto para el coach)
 
-Es un resumen, no todo el historial. Con 9 semanas de datos pesa unos 65 KB compacto (el archivo descargado trae sangría y llega a unos 115 KB). Se genera y descarga solo en el dispositivo, sin enviarlo a ningún servidor.
+Es un resumen, no todo el historial. Con 9 semanas de datos pesa unos **65–70 KB**. Desde `schemaVersion: 2` el archivo se escribe **compacto** (sin sangrías; antes llegaba a unos 115–125 KB). Casi todo el peso está en `exercises` y `recentSessions`; el bloque `program` suma unos 3–4 KB. Se genera y descarga solo en el dispositivo, sin enviarlo a ningún servidor.
 
-**Programas en el informe (estado actual, schemaVersion 1):** el informe **todavía no trae un bloque `program`**. Lo único que cambia con un programa activo es `goals.active`: pasa a listar **las metas del programa** (`phase` = fase del programa, `startDate` = inicio del programa, `targetDate` = fecha de la meta o fin del programa). No incluye nutrición del programa, checkpoints, ajustes ni semana X de Y. Para eso se necesita el siguiente `schemaVersion` del informe (pendiente).
+### Versiones del formato
+
+| Formato | Versión actual | Dónde está el número |
+|---|---|---|
+| `coachReport` | `schemaVersion: 2` | raíz del archivo |
+| `journalExport` | `version: 2` | dentro de `journalExport` |
+| Archivo de programa (el que importa la app) | `version: 1` | raíz; obligatorio y exacto |
+| `dataBackup` | sin número | se reconoce por `type: "dataBackup"` |
+
+Historia del `coachReport`:
+
+| `schemaVersion` | Qué trae |
+|---|---|
+| **1** | Las 16 claves de `app` a `recentSessions`. Con un programa activo solo cambiaba `goals.active`. El archivo llevaba sangría. |
+| **2** | **Todo lo de la versión 1 igual** (mismas claves y mismo significado) **más**: la clave `program` (sección «El bloque `program`») y `window.scope`, `window.from`, `window.to`. Archivo compacto. |
+
+**Regla de compatibilidad:** una versión nueva solo **agrega** claves; nunca quita ni renombra las anteriores. La Skill debe leer `schemaVersion` primero, usar `program` solo si es 2 o más, e ignorar las claves que no conozca.
+
+### Dos alcances del mismo informe
+
+- **Informe general** (Datos ▸ Informe para el coach): las últimas 8 semanas, más el bloque `program` del programa activo (o `null`). `window.scope` = `"last8weeks"`.
+- **Informe del programa** (Programas ▸ programa ▸ ⤓ Informe del programa): el **mismo formato**, pero todo limitado a `[startDate, min(endDate, hoy)]`. `window.scope` = `"program"`. Ver «Informe del programa» más abajo.
+
+**Con un programa activo,** `goals.active` lista **las metas del programa** (`phase` = fase del programa, `startDate` = inicio del programa, `targetDate` = fecha de la meta o fin del programa). El detalle completo (progreso, nutrición, checkpoints…) va en `program`.
 
 ```json
 {
-  "app": "GymAI", "type": "coachReport", "schemaVersion": 1, "generatedAt": "ISO",
+  "app": "GymAI", "type": "coachReport", "schemaVersion": 2, "generatedAt": "ISO",
   "units": { "weights": "en la unidad de cada ejercicio (campo unit)", "legend": { "kg": "kg", "lb": "lb", "kg_db": "kg por mancuerna", "lb_db": "lb por mancuerna" },
              "bodyWeight": "kg", "measurements": "cm", "toKg": "lb × 0.453592; *_db = por mancuerna (×2 para el total)" },
-  "window": { "weeks8From": "YYYY-MM-DD (lunes)", "sessionDetailFrom": "hoy-14d", "bodySeriesFrom": "hoy-112d", "today": "YYYY-MM-DD" },
+  "window": { "weeks8From": "YYYY-MM-DD (lunes)", "sessionDetailFrom": "hoy-14d", "bodySeriesFrom": "hoy-112d", "today": "YYYY-MM-DD",
+              "scope": "last8weeks" | "program", "from": "YYYY-MM-DD", "to": "YYYY-MM-DD" },
   "athlete": { …perfil del coach completo… },
   "goals": {
     "coachProfileGoal": { "phase", "aestheticGoal", "priorityMuscles" },
     "active": [ { "phase", "description", "startDate", "targetDate" } ],
     "exerciseGoals": [ { "routine", "workout", "exercise", "unit", "startWeight", "targetWeight", "startDate", "deadline" } ]
   },
+  "program": null | { …bloque del programa, ver más abajo… },
   "injuriesAndNotes": {
     "activeInjuries": [ { "date", "text" } ],
     "recent": [ { "date", "type", "text", "resolvedDate" } ]
@@ -340,7 +366,174 @@ Es un resumen, no todo el historial. Con 9 semanas de datos pesa unos 65 KB comp
 - **`body`**
   - Las series de peso, grasa y medidas cubren las últimas 16 semanas.
   - El promedio semanal de peso cubre las últimas 8 semanas.
+- **`window`**
+  - `scope` dice qué abarca el informe (`"last8weeks"` o `"program"`) y `from` / `to` el rango (fechas locales `AAAA-MM-DD`).
+  - `weeks8From`, `sessionDetailFrom` y `bodySeriesFrom` se conservan de la versión 1. Con alcance `program`, `weeks8From` y `bodySeriesFrom` valen `startDate`.
 - **`schemaVersion`**: sube cuando cambie el formato. Una Skill debe comprobarlo antes de leer.
+
+### El bloque `program`
+
+Es `null` si no hay programa activo (los planeados no aparecen en el informe general). Con uno activo, describe el programa y lo compara con lo realizado:
+
+```json
+"program": {
+  "id", "name", "phase", "status": "active" | "planned" | "done" | "cancelled", "startDate", "endDate",
+  "weekNumber": 5, "totalWeeks": 8, "notes", "routines": [ "Upper definición" ],
+  "goals": [ { "description", "metric", "exercise", "startValue", "targetValue", "targetDate", "current", "unit", "pct", "reached" } ],
+  "nutrition": { "current": { "calories", "proteinG", "fatMinG", "notes" },
+                 "history": [ { "date", "calories", "proteinG", "fatMinG", "reason" } ] },
+  "checkpoints": [ { "date", "type": "review" | "deload", "note", "doneDate" } ],
+  "nextCheckpoint": { "date", "type", "note" } | null,
+  "adjustmentsTotal": 3,
+  "latestAdjustments": [ { "date", "change", "reason", "source": "user" | "coach" } ],
+  "planVsActual": {
+    "asOf": "YYYY-MM-DD",
+    "sessions": { "plannedPerWeek": 4, "weeks": [ { "week", "from", "to", "partial", "planned", "done", "deload" } ],
+                  "fullWeeks", "done", "planned", "pct", "doneTotal" },
+    "weight": { "startKg", "startDate", "latestKg", "latestDate", "changeKg", "weeklyRatePct" },
+    "goals": [ { "description", "expectedPct", "actualPct", "pace": "reached" | "onTrack" | "behind" | null } ]
+  },
+  "finalSummary": null | { "outcome", "endedOn", "goalsReached", "goalsTotal", "goalsManual", "sessionsDone", "adherencePct", "weightChangeKg", "weeklyRatePct" },
+  "legend": { …cuatro textos que explican semanas, plannedPerWeek, peso y ritmo… }
+}
+```
+
+**Cómo se calcula:**
+
+- **Semana del programa:** `weekNumber` es 0 si todavía no empieza y se queda en `totalWeeks` cuando ya pasó la fecha de fin. Una semana del programa son 7 días contados desde `startDate` (semana 1 = días 1 a 7), **no** semanas de calendario.
+- **`goals`**
+  - Cada meta lleva su definición y su valor actual, con las reglas de la tabla de la sección 3.
+  - `exercise` solo aparece en `exerciseWeight`; `pct` es `null` si no hay dato o la métrica es `other`.
+  - En un programa terminado o cancelado, el valor actual se calcula con los datos **hasta su `endDate`**.
+- **`nutrition.history` y `latestAdjustments`:** van de lo más nuevo a lo más viejo. Los ajustes son los últimos 10 (`adjustmentsTotal` dice cuántos hay en total).
+- **`checkpoints`:** todos. `nextCheckpoint` es el pendiente más cercano con fecha de hoy en adelante. Un checkpoint con `doneDate: null` y fecha pasada está **vencido**.
+- **`planVsActual.sessions`**
+  - `planned` por semana sale de `athlete.availability.daysPerWeek` (`null` si no está configurado).
+  - `weeks` va desde `startDate` hasta hoy o `endDate`. Una sesión cuenta en la semana de su fecha, **sin importar su rutina**.
+  - `partial: true` es una semana en curso o recortada por `endDate`: no entra en `fullWeeks`, `done`, `planned` ni `pct`. `doneTotal` sí cuenta **todas** las sesiones del programa.
+  - `deload: true` marca la semana en la que cae un checkpoint de descarga.
+- **`planVsActual.weight`**
+  - `startKg` es el último peso registrado entre 7 días antes del inicio y el inicio; si no hay, el primero después del inicio. `latestKg` es el último hasta hoy o `endDate`.
+  - `changeKg` = final − inicial (`null` si no hay dos registros de días distintos).
+  - `weeklyRatePct` es el cambio en % del peso inicial **por semana** (negativo = baja). Es `null` si hay menos de 7 días entre los dos registros.
+- **`planVsActual.goals`**
+  - `expectedPct` es cuánto debería llevar la meta **solo por el tiempo** (días transcurridos entre el inicio y la fecha de la meta o el fin del programa, de 0 a 100). `null` en metas `other`.
+  - `actualPct` es el `pct` de `goals`.
+  - `pace`: `reached` si llegó al 100 %; `onTrack` si `actualPct` está a 10 puntos o menos de `expectedPct`; `behind` si no; `null` sin dato.
+- **`finalSummary`:** solo en programas `done` o `cancelled`; en el resto es `null`. `goalsManual` cuenta las metas `other`, que la app no mide sola.
+
+**Ejemplo real** (lo generó la app con los datos de prueba del apartado 10, el 9-nov-2026, semana 5 del programa de la sección 7; el programa se importó el 12-oct, el 2-nov se marcó la revisión y se bajaron las calorías). Las sesiones salen de los datos de prueba, no de la rutina del programa: por eso `routines` no coincide con ellas; el informe asocia las sesiones por fecha.
+
+```json
+"program": {
+  "id": "idmv5dp400wdvr",
+  "name": "Definición octubre–diciembre",
+  "phase": "cutting",
+  "status": "active",
+  "startDate": "2026-10-12",
+  "endDate": "2026-12-06",
+  "weekNumber": 5,
+  "totalWeeks": 8,
+  "notes": "Prioridad: hombros y espalda.",
+  "routines": [
+    "Upper definición"
+  ],
+  "goals": [
+    { "description": "Bajar de 81.0 a 78.5 kg", "metric": "weightKg", "exercise": null, "startValue": 81, "targetValue": 78.5, "targetDate": "2026-12-06", "current": 79.8, "unit": "kg", "pct": 48, "reached": false },
+    { "description": "Press banca de 85 a 90 kg", "metric": "exerciseWeight", "exercise": "Press banca con barra", "startValue": 85, "targetValue": 90, "targetDate": null, "current": 85, "unit": "kg", "pct": 0, "reached": false },
+    { "description": "Dormir al menos 7 h", "metric": "other", "exercise": null, "startValue": null, "targetValue": null, "targetDate": null, "current": null, "unit": null, "pct": null, "reached": false }
+  ],
+  "nutrition": {
+    "current": {
+      "calories": 2150,
+      "proteinG": 170,
+      "fatMinG": 60,
+      "notes": "Déficit de ~300 kcal"
+    },
+    "history": [
+      { "date": "2026-11-02", "calories": 2150, "proteinG": 170, "fatMinG": 60, "reason": "Ritmo de pérdida en el límite bajo del rango (0.3 kg/semana)" },
+      { "date": "2026-10-12", "calories": 2300, "proteinG": 170, "fatMinG": 60, "reason": "Inicial" }
+    ]
+  },
+  "checkpoints": [
+    { "date": "2026-11-02", "type": "review", "note": "Revisar ritmo de pérdida", "doneDate": "2026-11-02" },
+    { "date": "2026-11-16", "type": "deload", "note": "Semana de descarga", "doneDate": null }
+  ],
+  "nextCheckpoint": {
+    "date": "2026-11-16",
+    "type": "deload",
+    "note": "Semana de descarga"
+  },
+  "adjustmentsTotal": 3,
+  "latestAdjustments": [
+    { "date": "2026-11-02", "change": "Bajo calorías · Nutrición — kcal: 2300 → 2150", "reason": "Ritmo de pérdida en el límite bajo del rango (0.3 kg/semana)", "source": "coach" },
+    { "date": "2026-10-12", "change": "Programa activado", "reason": "", "source": "user" },
+    { "date": "2026-10-12", "change": "Programa importado", "reason": "", "source": "coach" }
+  ],
+  "planVsActual": {
+    "asOf": "2026-11-09",
+    "sessions": {
+      "plannedPerWeek": 4,
+      "weeks": [
+        { "week": 1, "from": "2026-10-12", "to": "2026-10-18", "partial": false, "planned": 4, "done": 4, "deload": false },
+        { "week": 2, "from": "2026-10-19", "to": "2026-10-25", "partial": false, "planned": 4, "done": 3, "deload": false },
+        { "week": 3, "from": "2026-10-26", "to": "2026-11-01", "partial": false, "planned": 4, "done": 4, "deload": false },
+        { "week": 4, "from": "2026-11-02", "to": "2026-11-08", "partial": false, "planned": 4, "done": 3, "deload": false },
+        { "week": 5, "from": "2026-11-09", "to": "2026-11-15", "partial": true, "planned": 4, "done": 0, "deload": false }
+      ],
+      "fullWeeks": 4,
+      "done": 14,
+      "planned": 16,
+      "pct": 88,
+      "doneTotal": 14
+    },
+    "weight": {
+      "startKg": 80.9,
+      "startDate": "2026-10-12",
+      "latestKg": 79.8,
+      "latestDate": "2026-11-07",
+      "changeKg": -1.1,
+      "weeklyRatePct": -0.37
+    },
+    "goals": [
+      { "description": "Bajar de 81.0 a 78.5 kg", "expectedPct": 51, "actualPct": 48, "pace": "onTrack" },
+      { "description": "Press banca de 85 a 90 kg", "expectedPct": 51, "actualPct": 0, "pace": "behind" },
+      { "description": "Dormir al menos 7 h", "expectedPct": null, "actualPct": null, "pace": null }
+    ]
+  },
+  "finalSummary": null,
+  "legend": {
+    "weeks": "Semana 1 = los primeros 7 días desde startDate. partial = semana incompleta (en curso o recortada por endDate): no cuenta para el porcentaje.",
+    "plannedPerWeek": "Sesiones por semana declaradas en el perfil del coach (availability.daysPerWeek); null si no hay.",
+    "weight": "startKg = último registro de los 7 días previos al inicio (o el primero después). weeklyRatePct = cambio % del peso por semana; null con menos de 7 días entre registros.",
+    "pace": "onTrack si actualPct está a 10 puntos o menos de expectedPct (avance esperado por tiempo); reached si llegó al 100 %; null si no hay dato."
+  }
+}
+```
+
+### Informe del programa
+
+Se descarga con **⤓ Informe del programa**, dentro del detalle de un programa activo, terminado o cancelado (los planeados todavía no tienen datos). El archivo se llama `gymai-program-report-<nombre>-<fecha>.json`. Es el **mismo formato `coachReport`** (`schemaVersion: 2`), pero todo se limita a `[startDate, min(endDate, hoy)]`:
+
+| Bloque | Diferencia con el informe general |
+|---|---|
+| `window` | `scope: "program"`; `from` y `to` son el rango del programa; `sessionDetailFrom` es 14 días antes del final del rango (nunca antes del inicio) |
+| `exercises` | Solo cuentan las sesiones dentro del rango: `bestSet`, `trend` y `lastSession` salen de ahí, no del historial completo |
+| `weeklyDirectSetsByMuscle`, `adherence`, `body.weeklyAvgWeightKg` | Una entrada por **semana del programa** (bloques de 7 días desde `startDate`; `weekStart` es el primer día del bloque). Puede haber más o menos de 8. Las semanas incompletas llevan `partial: true` |
+| `body` | Series y `latest` solo hasta el final del rango |
+| `recentSessions`, `injuriesAndNotes.recent` | Solo lo que cae dentro del rango (`activeInjuries` sigue siendo lo vigente hoy) |
+| `activeRoutine` | La rutina de la última sesión **dentro del rango** |
+| `goals.active` | Las metas **de ese programa**, aunque ya no esté activo |
+| `program` | Ese programa (no el activo). Si terminó o se canceló, trae `finalSummary` |
+| `athlete`, `goals.coachProfileGoal`, `goals.exerciseGoals` | El estado de hoy: no se reconstruye el pasado |
+
+Las sesiones posteriores a `endDate` no cuentan para el programa. Con 4 semanas de un programa y 9 semanas de datos, el archivo pesa unos 55 KB.
+
+**Ejemplo real de `program.finalSummary`** (el mismo programa, cerrado el 9-nov-2026 como «terminado»; en el informe general o con el programa activo vale `null`):
+
+```json
+"finalSummary": { "outcome": "done", "endedOn": "2026-11-09", "goalsReached": 0, "goalsTotal": 3, "goalsManual": 1, "sessionsDone": 14, "adherencePct": 88, "weightChangeKg": -1.1, "weeklyRatePct": -0.37 }
+```
 
 ## 7. Importar un programa (lo que debe generar la Skill)
 
@@ -357,6 +550,8 @@ El archivo **no lleva `status`**: lo elige el usuario al importar. Los campos qu
 
 ### Formato
 
+Este es un archivo **completo y real**: se importó en la app sin errores (con la pantalla Programas), y es el programa del que sale el ejemplo de la sección 6. Con una sola rutina de un entrenamiento para que sea corto; un programa real lleva las rutinas que haga falta.
+
 ```json
 {
   "app": "GymAI",
@@ -369,8 +564,8 @@ El archivo **no lleva `status`**: lo elige el usuario al importar. Los campos qu
     "startDate": "2026-10-12",
     "endDate": "2026-12-06",
     "goals": [
-      { "description": "Bajar de 82.0 a 78.5 kg", "targetDate": "2026-12-06", "metric": "weightKg", "startValue": 82.0, "targetValue": 78.5 },
-      { "description": "Press banca de 87.5 a 90 kg", "metric": "exerciseWeight", "exercise": "Press banca con barra", "startValue": 87.5, "targetValue": 90 },
+      { "description": "Bajar de 81.0 a 78.5 kg", "targetDate": "2026-12-06", "metric": "weightKg", "startValue": 81.0, "targetValue": 78.5 },
+      { "description": "Press banca de 85 a 90 kg", "metric": "exerciseWeight", "exercise": "Press banca con barra", "startValue": 85, "targetValue": 90 },
       { "description": "Dormir al menos 7 h", "metric": "other" }
     ],
     "nutrition": { "calories": 2300, "proteinG": 170, "fatMinG": 60, "notes": "Déficit de ~300 kcal" },
@@ -379,7 +574,30 @@ El archivo **no lleva `status`**: lo elige el usuario al importar. Los campos qu
       { "date": "2026-11-16", "type": "deload", "note": "Semana de descarga" }
     ],
     "notes": "Prioridad: hombros y espalda.",
-    "routines": [ { "name": "Upper A", "icon": "💪", "complexity": 2, "workouts": [ … ] } ]
+    "routines": [
+      {
+        "name": "Upper definición",
+        "icon": "💪",
+        "complexity": 2,
+        "workouts": [
+          {
+            "name": "Upper A",
+            "exercises": [
+              {
+                "name": "Press banca con barra", "unit": "kg", "restSeconds": 150,
+                "muscles": [ { "key": "chest", "role": "primary" }, { "key": "triceps", "role": "secondary" } ],
+                "sets": [ { "reps": 8, "rir": 2, "weight": 85 }, { "reps": 8, "rir": 2, "weight": 85 }, { "reps": 8, "rir": 1, "weight": 85 } ]
+              },
+              {
+                "name": "Elevaciones laterales", "unit": "kg_db", "restSeconds": 60,
+                "muscles": [ { "key": "shoulders", "role": "primary" } ],
+                "sets": [ { "reps": 15, "rir": 1, "weight": 9 }, { "reps": 15, "rir": 1, "weight": 9 } ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -453,7 +671,8 @@ Cada elemento de `program.routines` usa el **mismo formato que Import Routine** 
 
 - Las rutinas aparecen como rutinas normales (`activeRoutine` y `exercises` del informe se llenan en cuanto el usuario entrena con ellas).
 - `goals.active` del informe pasa a ser **las metas del programa** (sección 2, regla 10).
-- **Todavía no** viaja en el informe: nutrición del programa, checkpoints, bitácora de ajustes ni «semana X de Y» (ver sección 6).
+- Con el programa activo, el informe trae el bloque **`program`** (sección 6): metas con su avance, nutrición vigente e historial, checkpoints, últimos ajustes, «semana X de Y» y **plan vs. realizado** (sesiones, peso y ritmo semanal, avance esperado de cada meta).
+- Al terminar o cancelar el programa, su **informe del programa** (sección 6) trae además `finalSummary`.
 
 ## 8. Cómo regenerar los archivos
 
@@ -461,7 +680,8 @@ Todas las exportaciones de **toda la cuenta** viven en **Routine Manager ▸ �
 
 | Qué | Dónde |
 |---|---|
-| **Informe para el coach** (`coachReport`) | Datos ▸ 📋 Informe para el coach. Desde la consola del navegador (con sesión iniciada): `buildCoachReport()` devuelve el objeto y `exportCoachReport()` lo descarga. |
+| **Informe para el coach** (`coachReport`, alcance `last8weeks`) | Datos ▸ 📋 Informe para el coach. Desde la consola del navegador (con sesión iniciada): `buildCoachReport()` devuelve el objeto y `exportCoachReport()` lo descarga (compacto). |
+| **Informe del programa** (`coachReport`, alcance `program`) | 🗓 Programas ▸ abrir el programa ▸ ⤓ Informe del programa (no aparece en programas planeados). Desde la consola: `exportProgramReport(id)`; `buildCoachReport({program: p})` devuelve el objeto. |
 | **Super Journal** (`journalExport` tipo `superJournal`) | Datos ▸ elegir periodo (4, 8 o 12 semanas, todo o rango) ▸ ⤓ Super Journal (coach). |
 | **Una sesión** (`journalExport` tipo `journal`) | War Journal ▸ sesión ▸ ⤓ Exportar para el coach. |
 | **Respaldo completo** (`dataBackup`) | Datos ▸ ⤓ Respaldo completo. Incluye todas las listas (también `programs`), el perfil y el perfil del coach. No incluye los Documents y **no se puede restaurar desde la app**. |
@@ -505,8 +725,49 @@ Todo lo agregado lleva `demo: true` o un `id` que empieza con `demo-`. El botón
 - `data/journal` es un solo documento. Con unos cientos de sesiones se acercará al límite de 1 MiB de Firestore. Si pasa, habrá que repartir el journal en varios documentos.
 - Las sesiones anteriores a esta versión no tienen `startedAt` ni `at` por serie.
 - La detección de ejercicios saltados usa el nombre del ejercicio. Si se renombra un ejercicio en la rutina, las sesiones viejas lo verán como «saltado» contra la rutina actual, salvo que exista una foto de ese día en `routineHistory`.
-- Programas: si dos dispositivos editan el mismo programa casi a la vez, gana el último en guardar y podría perderse un ajuste hecho en el otro.
-- El informe aún no incluye el programa (nutrición, checkpoints, ajustes, semana X de Y): hoy solo cambia `goals.active`.
+- Programas: si dos dispositivos editan el mismo programa casi a la vez, gana el último en guardar y podría perderse un ajuste, una entrada de nutrición o un checkpoint hecho en el otro (el programa se combina completo, no campo por campo).
+- Tamaño del informe: con 9 semanas de datos densos pesa unos 65–70 KB, sobre todo por `exercises` y `recentSessions`. Si hiciera falta bajarlo habría que recortar campos (no se ha hecho).
+- Programas y sesiones: las sesiones se asocian por **fecha**, no por rutina. Si el usuario entrena otra rutina durante el programa, igual cuentan.
+- `plannedPerWeek` sale del perfil del coach **de hoy**: si cambia a mitad del programa, se aplica a todas las semanas.
+- Un programa activo que ya pasó su `endDate` sigue activo hasta que el usuario lo cierre: `weekNumber` se queda en la última semana y las sesiones posteriores a `endDate` no cuentan.
 - Los datos de prueba no incluyen ningún programa; se prueba importando `PROGRAM_TEMPLATE.json`.
 - El respaldo completo no incluye los Documents ni se puede restaurar desde la app.
 - No existe el músculo abdomen (`abs`): la lista de 10 músculos es cerrada.
+
+## 12. Qué se movió o se quitó en el orden de la app
+
+El orden (Fase 1) **no cambió ningún formato de datos**: los 11 archivos exportados (informe, sesión, Super Journal, respaldos y rutinas) y la importación de rutinas salían byte por byte iguales antes y después de reordenar. Los cambios de formato vinieron después y están en las secciones 3 y 6 (programas e informe `schemaVersion: 2`).
+
+**Pantallas**
+
+| Antes | Ahora |
+|---|---|
+| El selector de periodo y el botón del Super Journal estaban en la barra del War Journal | Están en **Datos ▸ Exportar y respaldo**, junto al informe y al respaldo completo |
+| «📋 Informe para el coach» también estaba en la tarjeta del coach (Perfil) | Quitado de ahí: el informe se descarga solo desde Datos |
+| «Clear Journal» (un `confirm` simple) | «🗑 Borrar sesiones…»: abre Datos ▸ Borrar datos, con respaldo y escribir `BORRAR` |
+| Datos mezclaba lo de uso normal con lo temporal | Datos muestra primero **Exportar y respaldo** y, aparte, **Herramientas** (borrar por categoría, datos de prueba, modo inspección) |
+| Exportar una sesión o una rutina | Igual: siguen en la sesión y en la tarjeta de la rutina |
+
+Regla actual: las exportaciones de **toda la cuenta** viven solo en Datos; las de **un elemento** están en ese elemento.
+
+**Código (`HTML/index.html`).** El script está dividido en secciones con encabezado `§ N · NOMBRE` (se busca por ese texto):
+
+| § | Qué contiene |
+|---|---|
+| 1 | NÚCLEO: utilidades, fechas, unidades |
+| 2 | DATOS Y SINCRONIZACIÓN: listas que solo se agregan, combinar por `id`, marcadores de borrado |
+| 3 | RUTINAS |
+| 4 | PROGRAMAS: datos, pantalla, importar |
+| 5 | JOURNAL Y SESIÓN |
+| 6 | PROGRESIONES IA |
+| 7 | CUERPO: registro corporal |
+| 8 | PERFIL Y COACH, objetivos y notas (`goalsActive()`) |
+| 9 | SOCIAL |
+| 10 | INFORMES: `buildCoachReport`, `exportCoachReport`, `exportProgramReport`, `journalExport`, Super Journal |
+| 11 | AJUSTES Y MANTENIMIENTO: pantalla Datos (exportar y respaldo) y el catálogo `DATA_PARTS` / `DATA_CATS` |
+| 12 | HERRAMIENTAS (temporales): borrar datos, datos de prueba, modo inspección |
+| 13 | ARRANQUE |
+
+**Quitado** (sin ninguna referencia en el archivo): `rmRenameWorkout`, `rmDeleteWorkout` (la pantalla usa las versiones `*Inline`), `profileEmpty` (la reemplaza `profileAuthView`) y `crewTierColor`.
+
+**Pendiente de decidir** (siguen en el código, sin usarse): `calcBenchRank`, `exportBackup`, `guardarConocimientoYoutube`, `cloudSubscribeNotifs` y `notifyFriends`.
