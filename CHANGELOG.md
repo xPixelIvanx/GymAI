@@ -2,6 +2,12 @@
 
 Qué cambió en GymAI, por fase. El detalle de formatos está en `DATA_GUIDE.md`.
 
+## Después de la Fase 4 — los 4 temas pendientes
+- **Guardar una sesión** (11c86bc): ya no cae en la lista de rutinas; abre la sesión guardada en el War Journal.
+- **Funciones sin uso** (4419141): quitadas `calcBenchRank` y `exportBackup`; `guardarConocimientoYoutube` se queda (ayudante de consola); `cloudSubscribeNotifs` y `notifyFriends` se quedan, marcadas como sin conectar.
+- **Dos dispositivos editando un programa** (088960a): los ajustes, el historial de nutrición y los checkpoints de ambos lados se unen al sincronizar; el resto de campos sigue ganando la edición más reciente. Probado con dos dispositivos simulados: el código anterior perdía datos.
+- **Tamaño del informe**: medido (≈ 66 KB; `exercises` 48 %, `recentSessions` 27 %, `activeRoutine` 9 %, `program` 5 %). Decisión: no recortar; el recorte posible está descrito en `DATA_GUIDE.md` (sección 11).
+
 ## Fase 4 — Documentación
 - `DATA_GUIDE.md` al día: versiones de cada formato (`coachReport` v1 y v2), bloque `program` del informe con su cálculo, informe del programa, ejemplo real de archivo de programa y de informe con programa (generados por la app, no escritos a mano), qué se movió o quitó en el orden (sección 12) y límites nuevos.
 - Este changelog.

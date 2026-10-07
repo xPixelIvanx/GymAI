@@ -44,7 +44,7 @@ Archivos de referencia en el repo: `PROGRAM_TEMPLATE.json` (programa comentado, 
 | `data/goals` | `gymAI_hist_goals_v1` | Objetivos con fecha de inicio y fin | Se combina por `id`. |
 | `data/notes` | `gymAI_hist_notes_v1` | Lesiones y notas | Se combina por `id`. |
 | `data/routineHistory` | `gymAI_hist_routines_v1` | Fotos de las rutinas cuando cambian | Se combina por `id`. |
-| `data/programs` | `gymAI_hist_programs_v1` | Programas (plan con fechas) | Se combina por `id`; si dos dispositivos editan el mismo programa a la vez, gana la edición más reciente. |
+| `data/programs` | `gymAI_hist_programs_v1` | Programas (plan con fechas) | Se combina por `id`. Si dos dispositivos editan el mismo programa, cada campo sale de la edición más reciente, pero `adjustments`, `nutrition.history` y `checkpoints` **se unen** (ver regla 9). |
 
 Las colecciones sociales (`crews`, `friendships`, `chats`, `notifications`…) no forman parte de los datos de entrenamiento.
 
@@ -82,6 +82,7 @@ Las colecciones sociales (`crews`, `friendships`, `chats`, `notifications`…) n
    - Si se activa un programa cuyo inicio está en el futuro, el inicio se adelanta a hoy (queda anotado).
    - Cambiar calorías, proteína o grasa **agrega** una entrada a `nutrition.history` y a `adjustments`; nunca sobrescribe.
    - Los ajustes y la nutrición solo se agregan. Eliminar un programa es una lápida (`deletedAt`).
+   - **Dos dispositivos:** al sincronizar, los campos simples (nombre, fechas, estado, metas, rutinas) salen de la edición más reciente. Lo que solo crece **se une**: los `adjustments` y las entradas de `nutrition.history` de ambos lados se conservan (ordenadas por fecha), un checkpoint cuenta como hecho si cualquiera de los dos lo marcó, y la nutrición vigente (`nutrition.calories`, `proteinG`, `fatMinG`) es la de la entrada más nueva del historial.
 10. **Fuente única de los objetivos vigentes.**
     - Con un programa activo, **sus `goals` son los objetivos vigentes** (Perfil y `coachReport.goals.active`, además del bloque `program.goals`), aunque estén vacíos.
     - Sin programa activo, lo son los de `data/goals`.
@@ -725,8 +726,8 @@ Todo lo agregado lleva `demo: true` o un `id` que empieza con `demo-`. El botón
 - `data/journal` es un solo documento. Con unos cientos de sesiones se acercará al límite de 1 MiB de Firestore. Si pasa, habrá que repartir el journal en varios documentos.
 - Las sesiones anteriores a esta versión no tienen `startedAt` ni `at` por serie.
 - La detección de ejercicios saltados usa el nombre del ejercicio. Si se renombra un ejercicio en la rutina, las sesiones viejas lo verán como «saltado» contra la rutina actual, salvo que exista una foto de ese día en `routineHistory`.
-- Programas: si dos dispositivos editan el mismo programa casi a la vez, gana el último en guardar y podría perderse un ajuste, una entrada de nutrición o un checkpoint hecho en el otro (el programa se combina completo, no campo por campo).
-- Tamaño del informe: con 9 semanas de datos densos pesa unos 65–70 KB, sobre todo por `exercises` y `recentSessions`. Si hiciera falta bajarlo habría que recortar campos (no se ha hecho).
+- Programas en dos dispositivos: si cambian el mismo campo simple (nombre, fechas, metas, estado…), gana la edición más reciente. Los ajustes, el historial de nutrición y los checkpoints no se pierden (se unen). Si ambos cambian la nutrición el mismo día, la «vigente» es la de la entrada que quede última en el historial.
+- Tamaño del informe: con 9 semanas de datos densos pesa unos 65–70 KB (≈ 20 000 tokens), sobre todo por `exercises` (48 %, de los cuales `trend` es la mayor parte) y `recentSessions` (27 %). Se decidió **no recortar** para no perder información; el recorte más barato, si algún día hace falta, es `trend` de 6 a 4 sesiones y `recentSessions` de 14 a 7 días (≈ −15 KB), avisando a la Skill.
 - Programas y sesiones: las sesiones se asocian por **fecha**, no por rutina. Si el usuario entrena otra rutina durante el programa, igual cuentan.
 - `plannedPerWeek` sale del perfil del coach **de hoy**: si cambia a mitad del programa, se aplica a todas las semanas.
 - Un programa activo que ya pasó su `endDate` sigue activo hasta que el usuario lo cierre: `weekNumber` se queda en la última semana y las sesiones posteriores a `endDate` no cuentan.
@@ -747,6 +748,7 @@ El orden (Fase 1) **no cambió ningún formato de datos**: los 11 archivos expor
 | «Clear Journal» (un `confirm` simple) | «🗑 Borrar sesiones…»: abre Datos ▸ Borrar datos, con respaldo y escribir `BORRAR` |
 | Datos mezclaba lo de uso normal con lo temporal | Datos muestra primero **Exportar y respaldo** y, aparte, **Herramientas** (borrar por categoría, datos de prueba, modo inspección) |
 | Exportar una sesión o una rutina | Igual: siguen en la sesión y en la tarjeta de la rutina |
+| Al guardar una sesión («Save to War Journal») la app caía en la lista de rutinas, porque la vista a la que iba no existía | Ahora abre **esa sesión** en el War Journal; «atrás» vuelve por sesiones → entrenamientos → rutinas del journal |
 
 Regla actual: las exportaciones de **toda la cuenta** viven solo en Datos; las de **un elemento** están en ese elemento.
 
@@ -768,6 +770,6 @@ Regla actual: las exportaciones de **toda la cuenta** viven solo en Datos; las d
 | 12 | HERRAMIENTAS (temporales): borrar datos, datos de prueba, modo inspección |
 | 13 | ARRANQUE |
 
-**Quitado** (sin ninguna referencia en el archivo): `rmRenameWorkout`, `rmDeleteWorkout` (la pantalla usa las versiones `*Inline`), `profileEmpty` (la reemplaza `profileAuthView`) y `crewTierColor`.
+**Quitado** (sin ninguna referencia en el archivo): `rmRenameWorkout`, `rmDeleteWorkout` (la pantalla usa las versiones `*Inline`), `profileEmpty` (la reemplaza `profileAuthView`), `crewTierColor`, `calcBenchRank` (envoltorio de 3 líneas) y `exportBackup` (generaba un archivo `type: "backup"` que la propia app rechaza al importar; lo reemplaza Datos ▸ Respaldo completo).
 
-**Pendiente de decidir** (siguen en el código, sin usarse): `calcBenchRank`, `exportBackup`, `guardarConocimientoYoutube`, `cloudSubscribeNotifs` y `notifyFriends`.
+**Se conservan a propósito** (sin usarse todavía): `guardarConocimientoYoutube` (ayudante de consola para poblar la base de conocimiento) y el par `cloudSubscribeNotifs` / `notifyFriends` (notificaciones de actividad a medio conectar: la API de nube y las reglas de Firestore ya existen; en el código están marcadas «SIN CONECTAR»).
