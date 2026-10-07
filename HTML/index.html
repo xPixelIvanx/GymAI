@@ -3270,6 +3270,7 @@ function importFromFile(file){
   reader.onload=()=>{
     try{
       const data=JSON.parse(reader.result);
+      if(data&&data.type==='program'){programImportPreview(data);return;}
       let added=0;
       if(data.type==='backup'||Array.isArray(data.routines)){showToast('This is a full backup — export individual routines to import them one by one');return;}
       if(data.type==='routine'&&data.routine){routines.push(cloneRoutineFresh(data.routine));added++;}
@@ -3697,10 +3698,12 @@ function renderPgModal(){
     body=`<div class="bl-field"><label>Resultado</label>${seg('pgSetResult',[['done','Terminado'],['cancelled','Cancelado']],s.result)}</div>
       ${txt('pg-x-note','Nota final',s.note,'Opcional','maxlength="200"')}
       <div class="bl-hint">El programa queda en el historial con su fecha de cierre. Tus sesiones y tu registro corporal no se tocan.</div>`;
-  }else if(m==='import'||m==='importError'){
-    title=pgState.title;body=pgState.body;
+  }else if(m==='import'){
+    title='IMPORTAR PROGRAMA';body=pgImportBodyHTML(pgState);
+  }else if(m==='importError'){
+    title='ARCHIVO NO VÁLIDO';body=pgState.body;
   }
-  const foot=m==='edit'?nav(pgDraft.id?'✓ Guardar':'✓ Crear programa','pgSaveEdit'):m==='adjust'?nav('✓ Registrar','pgSaveAdjust'):m==='checkpoint'?nav('✓ Agregar','pgSaveCheckpoint'):m==='close'?nav('■ Cerrar programa','pgSaveClose'):pgState.foot;
+  const foot=m==='edit'?nav(pgDraft.id?'✓ Guardar':'✓ Crear programa','pgSaveEdit'):m==='adjust'?nav('✓ Registrar','pgSaveAdjust'):m==='checkpoint'?nav('✓ Agregar','pgSaveCheckpoint'):m==='close'?nav('■ Cerrar programa','pgSaveClose'):m==='import'?nav('✓ Importar programa','pgImportConfirm'):`<div class="pw-nav"><button class="pw-btn primary" onclick="pgClose()">Entendido</button></div>`;
   root.innerHTML=`<div class="pw-card" style="max-width:560px">${pgHead(title)}<div class="pw-body" style="margin-top:16px">${body}</div>${foot}</div>`;
   const b=root.querySelector('.pw-body');if(b)b.scrollTop=scroll;
 }
@@ -3710,6 +3713,154 @@ function pgSetSource(v){pgPick('source',v);}
 function pgSetCpType(v){pgPick('type',v);}
 function pgSetResult(v){pgPick('result',v);}
 
+
+/* ── PROGRAMAS: importar (archivo {app,version:1,type:"program",program:{…,routines:[…]}}) ──
+   Se valida TODO antes de tocar nada; si algo es inválido se rechaza con la lista de problemas.
+   Las rutinas se crean con ids nuevos y sin pisar las existentes (si el nombre ya existe se agrega «(2)»). */
+function pgIsNum(v){return (typeof v==='number'&&isFinite(v))||(typeof v==='string'&&v.trim()!==''&&isFinite(Number(v)));}
+function pgIsInt(v,min,max){if(!pgIsNum(v))return false;const n=Number(v);return Math.floor(n)===n&&n>=min&&n<=max;}
+function pgValidateRoutine(r0,i,errs){
+  let r=r0;if(r&&r.type==='routine'&&r.routine)r=r.routine;
+  if(!r||typeof r!=='object'||Array.isArray(r)){errs.push('Rutina '+(i+1)+': no es una rutina válida');return null;}
+  const nm=typeof r.name==='string'?r.name.trim():'',W='Rutina '+(nm?'«'+nm+'»':(i+1)),n0=errs.length;
+  if(!nm)errs.push(W+': falta el nombre');else if(nm.length>60)errs.push(W+': el nombre pasa de 60 caracteres');
+  const cx=r.complexity==null?2:r.complexity;
+  if(cx!==1&&cx!==2&&cx!==3)errs.push(W+': complexity debe ser 1, 2 o 3 (llegó '+JSON.stringify(r.complexity)+')');
+  const wks=r.workouts;
+  if(!Array.isArray(wks)||!wks.length){errs.push(W+': necesita al menos un workout');return null;}
+  if(wks.length>14)errs.push(W+': más de 14 workouts');
+  const muscleKeys=MUSCLE_GROUPS.map(g=>g.key);
+  wks.forEach((w,wi)=>{
+    const wn=w&&typeof w.name==='string'?w.name.trim():'',WW=W+' › '+(wn||'Workout '+(wi+1));
+    if(!wn)errs.push(WW+': falta el nombre del workout');
+    const exs=w&&w.exercises;
+    if(!Array.isArray(exs)){errs.push(WW+': faltan los ejercicios');return;}
+    if(exs.length>30)errs.push(WW+': más de 30 ejercicios');
+    exs.forEach((e,ei)=>{
+      const en=e&&typeof e.name==='string'?e.name.trim():'',EE=WW+' › '+(en||'Ejercicio '+(ei+1));
+      if(!e||typeof e!=='object'){errs.push(EE+': no válido');return;}
+      if(!en)errs.push(EE+': falta el nombre del ejercicio');else if(en.length>80)errs.push(EE+': el nombre pasa de 80 caracteres');
+      if(e.unit!=null&&!UNITS[e.unit])errs.push(EE+': unidad «'+e.unit+'» no válida (usa '+Object.keys(UNITS).join(', ')+')');
+      if(e.restSeconds!=null&&!(pgIsNum(e.restSeconds)&&Number(e.restSeconds)>=0&&Number(e.restSeconds)<=1800))errs.push(EE+': descanso no válido (0 a 1800 segundos)');
+      if(e.muscles!=null){
+        if(!Array.isArray(e.muscles))errs.push(EE+': muscles debe ser una lista');
+        else e.muscles.forEach(m=>{
+          if(!m||muscleKeys.indexOf(m.key)<0)errs.push(EE+': clave de músculo «'+(m&&m.key)+'» no válida (usa '+muscleKeys.join(', ')+')');
+          else if(m.role!=='primary'&&m.role!=='secondary')errs.push(EE+': el role de «'+m.key+'» debe ser primary o secondary');});}
+      const sets=e.sets;
+      if(!Array.isArray(sets)||!sets.length){errs.push(EE+': necesita al menos una serie');return;}
+      if(sets.length>20)errs.push(EE+': más de 20 series');
+      sets.forEach((st,si)=>{
+        const SS=EE+' › serie '+(si+1);
+        if(!st||typeof st!=='object'){errs.push(SS+': no válida');return;}
+        if(!pgIsInt(st.reps,0,500))errs.push(SS+': reps debe ser un entero de 0 a 500 (llegó '+JSON.stringify(st.reps)+')');
+        if(st.rir==null||st.rir===''){if(cx!==1)errs.push(SS+': falta el RIR (entero de 0 a 10)');}
+        else if(!pgIsInt(st.rir,0,10))errs.push(SS+': el RIR debe ser un entero de 0 a 10 (llegó '+JSON.stringify(st.rir)+')');
+        if(st.weight!=null&&st.weight!==''&&!(pgIsNum(st.weight)&&Number(st.weight)>=0&&Number(st.weight)<=2000))errs.push(SS+': peso no válido (0 a 2000)');
+        if(st.type!=null&&!RX_SET_TYPES[st.type])errs.push(SS+': tipo «'+st.type+'» no válido (usa '+Object.keys(RX_SET_TYPES).join(', ')+')');
+        if(st.dropsets!=null){
+          if(!Array.isArray(st.dropsets))errs.push(SS+': dropsets debe ser una lista');
+          else st.dropsets.forEach((d,di)=>{if(!d||!pgIsInt(d.reps,0,500)||!(d.weight==null||d.weight===''||(pgIsNum(d.weight)&&Number(d.weight)>=0&&Number(d.weight)<=2000)))errs.push(SS+' › dropset '+(di+1)+': reps (entero) o peso no válidos');});}
+      });
+    });
+  });
+  return errs.length>n0?null:r;
+}
+/* → {errors:[…]} or {errors:[], program, routines} */
+function pgValidateImport(data){
+  const errs=[];
+  if(data.app!=null&&data.app!=='GymAI')errs.push('«app» debe ser "GymAI" (llegó '+JSON.stringify(data.app)+')');
+  if(data.version!==1)errs.push('Versión no soportada: se esperaba "version": 1'+(data.version==null?' (falta el campo)':' y llegó '+JSON.stringify(data.version)));
+  const P=data.program;
+  if(!P||typeof P!=='object'||Array.isArray(P)){errs.push('Falta el bloque «program»');return {errors:errs};}
+  const name=typeof P.name==='string'?P.name.trim():'';
+  if(!name)errs.push('Programa: falta el nombre');else if(name.length>80)errs.push('Programa: el nombre pasa de 80 caracteres');
+  if(PG_PHASES.indexOf(P.phase)<0)errs.push('Programa: fase «'+P.phase+'» no válida (usa '+PG_PHASES.join(', ')+')');
+  const okS=typeof P.startDate==='string'&&validYMD(P.startDate),okE=typeof P.endDate==='string'&&validYMD(P.endDate);
+  if(!okS)errs.push('Programa: startDate no válida (usa AAAA-MM-DD)');
+  if(!okE)errs.push('Programa: endDate no válida (usa AAAA-MM-DD)');
+  if(okS&&okE){if(P.endDate<P.startDate)errs.push('Programa: endDate debe ser igual o posterior a startDate');else if(pgDayNum(P.endDate)-pgDayNum(P.startDate)>730)errs.push('Programa: no puede durar más de 2 años');}
+  const goals=[];
+  if(P.goals!=null){
+    if(!Array.isArray(P.goals))errs.push('Programa: goals debe ser una lista');
+    else{if(P.goals.length>10)errs.push('Programa: más de 10 metas');P.goals.forEach((g,i)=>{const c=pgCleanGoal(g,'Meta '+(i+1),errs);if(c)goals.push(c);});}}
+  let nu={calories:null,proteinG:null,fatMinG:null,notes:''};
+  if(P.nutrition!=null){
+    if(typeof P.nutrition!=='object'||Array.isArray(P.nutrition))errs.push('Programa: nutrition debe ser un objeto');
+    else{
+      const c=pgNumStrict(P.nutrition.calories,PG_NUTR_MAX.calories),p=pgNumStrict(P.nutrition.proteinG,PG_NUTR_MAX.proteinG),f=pgNumStrict(P.nutrition.fatMinG,PG_NUTR_MAX.fatMinG);
+      if(!c.ok)errs.push('Nutrición: calories no válidas (0 a '+PG_NUTR_MAX.calories+')');
+      if(!p.ok)errs.push('Nutrición: proteinG no válida (0 a '+PG_NUTR_MAX.proteinG+')');
+      if(!f.ok)errs.push('Nutrición: fatMinG no válida (0 a '+PG_NUTR_MAX.fatMinG+')');
+      const nn=P.nutrition.notes;if(nn!=null&&(typeof nn!=='string'||nn.length>200))errs.push('Nutrición: notes debe ser texto de hasta 200 caracteres');
+      nu={calories:c.val,proteinG:p.val,fatMinG:f.val,notes:typeof nn==='string'?nn.trim():''};}}
+  const cps=[];
+  if(P.checkpoints!=null){
+    if(!Array.isArray(P.checkpoints))errs.push('Programa: checkpoints debe ser una lista');
+    else{if(P.checkpoints.length>40)errs.push('Programa: más de 40 checkpoints');
+      P.checkpoints.forEach((c,i)=>{const W='Checkpoint '+(i+1);
+        if(!c||typeof c.date!=='string'||!validYMD(c.date))errs.push(W+': fecha no válida (usa AAAA-MM-DD)');
+        else if(c.type!=='review'&&c.type!=='deload')errs.push(W+': tipo «'+c.type+'» no válido (usa review o deload)');
+        else if(c.note!=null&&(typeof c.note!=='string'||c.note.length>200))errs.push(W+': note debe ser texto de hasta 200 caracteres');
+        else cps.push({date:c.date,type:c.type,note:typeof c.note==='string'?c.note.trim():''});});}}
+  if(P.notes!=null&&(typeof P.notes!=='string'||P.notes.length>600))errs.push('Programa: notes debe ser texto de hasta 600 caracteres');
+  const rts=[];
+  if(P.routines!=null){
+    if(!Array.isArray(P.routines))errs.push('Programa: routines debe ser una lista');
+    else{if(P.routines.length>10)errs.push('Programa: más de 10 rutinas');P.routines.forEach((r,i)=>{const c=pgValidateRoutine(r,i,errs);if(c)rts.push(c);});}}
+  if(errs.length)return {errors:errs};
+  return {errors:[],program:{name,phase:P.phase,startDate:P.startDate,endDate:P.endDate,goals,nutrition:nu,checkpoints:cps,notes:typeof P.notes==='string'?P.notes.trim():''},routines:rts};
+}
+function programImportPreview(data){
+  let v;try{v=pgValidateImport(data);}catch(e){v={errors:['No se pudo leer el programa: '+(e&&e.message||e)]};}
+  if(v.errors.length){
+    const shown=v.errors.slice(0,12);
+    pgOpenModal('importError',{body:`<div class="bl-hint" style="margin:0 0 12px">No se importó nada. Corrige el archivo (o pide a tu coach que lo regenere) y vuelve a intentarlo.</div>
+      ${shown.map(e=>`<div class="bl-row"><div class="bl-note" style="margin:0;color:var(--white)">${esc(e)}</div></div>`).join('')}
+      ${v.errors.length>shown.length?`<div class="bl-hint">…y ${v.errors.length-shown.length} problema${v.errors.length-shown.length!==1?'s':''} más.</div>`:''}`});
+    return;
+  }
+  const taken=routines.map(r=>r.name),finalNames=[];
+  v.routines.forEach(r=>{let nm=r.name.trim(),k=2;while(taken.indexOf(nm)>=0){nm=r.name.trim()+' ('+k+')';k++;}taken.push(nm);finalNames.push(nm);});
+  pgOpenModal('import',{imp:v,names:finalNames,status:'planned'});
+}
+function pgImportBodyHTML(s){
+  const P=s.imp.program,tot=programWeeks(P),chips=[];
+  if(P.nutrition.calories!=null)chips.push(`<span class="bl-chip">🍽 <b>${esc(P.nutrition.calories)}</b> kcal</span>`);
+  if(P.nutrition.proteinG!=null)chips.push(`<span class="bl-chip"><b>${esc(P.nutrition.proteinG)}</b> g proteína</span>`);
+  if(P.nutrition.fatMinG!=null)chips.push(`<span class="bl-chip"><b>${esc(P.nutrition.fatMinG)}</b> g grasa mín.</span>`);
+  const warn=[],cur=programActive();
+  if(P.endDate<todayStr())warn.push('Según sus fechas, este programa ya terminó.');
+  s.imp.routines.forEach((r,i)=>{if(s.names[i]!==r.name.trim())warn.push('Ya existe una rutina llamada «'+r.name.trim()+'»: la nueva se creará como «'+s.names[i]+'». No se pisa la existente.');});
+  if(cur)warn.push('Hay un programa activo («'+cur.name+'»). Si eliges «Activar ahora», se cerrará como terminado.');
+  const counts=r=>{let w=r.workouts.length,e=0,st=0;r.workouts.forEach(x=>x.exercises.forEach(y=>{e++;st+=y.sets.length;}));return w+' workout'+(w!==1?'s':'')+' · '+e+' ejercicio'+(e!==1?'s':'')+' · '+st+' series';};
+  return `<div class="bl-sec" style="margin-top:0">Resumen</div>
+    <div class="bl-row"><div class="bl-row-top"><span class="bl-date">${esc(P.name)}</span><span class="bl-chip">${esc(COACH_LABELS[P.phase]||P.phase)}</span></div>
+      <div class="bl-note" style="margin:0">${fmtBodyDate(P.startDate,true)} → ${fmtBodyDate(P.endDate,true)} · ${tot} semana${tot!==1?'s':''}</div>${P.notes?`<div class="bl-note" style="margin:6px 0 0">${esc(P.notes)}</div>`:''}</div>
+    <div class="bl-sec">Metas (${P.goals.length})</div>
+    ${P.goals.length?P.goals.map(g=>`<div class="bl-row"><div class="bl-date">${esc(g.description)}</div><div class="bl-note" style="margin:4px 0 0">${esc(PG_METRICS[g.metric])}${g.exercise?' · '+esc(g.exercise):''}${g.metric!=='other'?' · '+esc(g.startValue)+' → '+esc(g.targetValue):''}${g.targetDate?' · meta '+fmtBodyDate(g.targetDate,true):''}</div></div>`).join(''):'<div class="bl-hint">Sin metas.</div>'}
+    <div class="bl-sec">Nutrición</div>
+    ${chips.length?`<div class="bl-chips" style="margin-bottom:8px">${chips.join('')}</div>`:'<div class="bl-hint">Sin metas de nutrición.</div>'}${P.nutrition.notes?`<div class="bl-note" style="margin:0 0 6px">${esc(P.nutrition.notes)}</div>`:''}
+    <div class="bl-sec">Checkpoints (${P.checkpoints.length})</div>
+    ${P.checkpoints.length?P.checkpoints.map(c=>`<div class="bl-row"><div class="bl-date">${fmtBodyDate(c.date,true)} · ${esc(PG_CP_TYPES[c.type])}</div>${c.note?`<div class="bl-note" style="margin:4px 0 0">${esc(c.note)}</div>`:''}</div>`).join(''):'<div class="bl-hint">Sin checkpoints.</div>'}
+    <div class="bl-sec">Rutinas que se crearán (${s.imp.routines.length})</div>
+    ${s.imp.routines.length?s.imp.routines.map((r,i)=>`<div class="bl-row"><div class="bl-date">${esc(r.icon||'📋')} ${esc(s.names[i])}</div><div class="bl-note" style="margin:4px 0 0">${counts(r)}</div></div>`).join(''):'<div class="bl-hint">El archivo no trae rutinas.</div>'}
+    ${warn.length?`<div class="bl-sec">Avisos</div>${warn.map(w=>`<div class="bl-hint" style="margin:0 0 6px">⚠ ${esc(w)}</div>`).join('')}`:''}
+    <div class="bl-field" style="margin-top:12px"><label>Estado al importar</label><div class="cp-seg"><button class="${s.status==='planned'?'sel':''}" onclick="pgSetImportStatus('planned')">Planeado</button><button class="${s.status==='active'?'sel':''}" onclick="pgSetImportStatus('active')">Activar ahora</button></div></div>`;
+}
+function pgSetImportStatus(v){pgState.status=v;renderPgModal();}
+function pgImportConfirm(){
+  const s=pgState;if(!s||!s.imp)return;
+  const taken=routines.map(r=>r.name),ids=[],added=[];
+  s.imp.routines.forEach(r=>{
+    let nm=r.name.trim(),k=2;while(taken.indexOf(nm)>=0){nm=r.name.trim()+' ('+k+')';k++;}taken.push(nm);
+    const c=cloneRoutineFresh(r);c.name=nm;added.push(c);ids.push(c.id);});
+  added.forEach(c=>routines.push(c));if(added.length)saveRoutines();
+  const rec=programCreate(Object.assign({},s.imp.program,{routineIds:ids}),s.status==='active','coach');
+  if(added.length&&typeof rfSync==='function')rfSync();
+  pgClose();rmOpenProgram(rec.id);renderProfile();
+  showToast('Programa importado'+(added.length?' · '+added.length+' rutina'+(added.length!==1?'s':'')+' creada'+(added.length!==1?'s':''):''));
+}
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
    ║  § 5 · JOURNAL Y SESIÓN
