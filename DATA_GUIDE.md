@@ -1,6 +1,22 @@
 # GymAI — Guía de datos
 
-Esta guía explica cómo GymAI guarda los datos de entrenamiento y cómo se exportan para conectarlos a una Skill de coaching (p. ej. `coach-gym`). Todo el código vive en `HTML/index.html`.
+Esta guía explica cómo GymAI guarda los datos de entrenamiento y cómo se conectan con una Skill de coaching (p. ej. `coach-gym`). Todo el código vive en `HTML/index.html`.
+
+## 0. Para la Skill: qué puede leer y qué puede escribir
+
+| Sentido | Archivo | Formato | Cómo lo obtiene el usuario |
+|---|---|---|---|
+| La Skill **lee** | **Informe para el coach** | `coachReport` (sección 6) | Datos ▸ Exportar y respaldo ▸ 📋 Informe para el coach |
+| La Skill **lee** | Super Journal / una sesión | `journalExport` (sección 5) | Datos ▸ Super Journal · o ⤓ dentro de una sesión |
+| La Skill **lee** | Respaldo completo | `dataBackup` | Datos ▸ ⤓ Respaldo completo |
+| La Skill **escribe** | **Programa** (con sus rutinas) | `program` (sección 7) | Programas ▸ ⤒ Importar programa |
+| La Skill **escribe** | Una rutina suelta | `routine` (`ROUTINE_TEMPLATE.json`) | Routine Manager ▸ ⤒ Import Routine |
+
+Flujo normal: el usuario sube el **informe**; la Skill lo analiza y le devuelve un **programa** (un `.json` con metas, nutrición, checkpoints y las rutinas); el usuario lo importa, revisa el resumen y lo activa. Al día siguiente la Skill vuelve a leer un informe nuevo para ver cómo va.
+
+**La app no guarda nada en servidores de la Skill**: todo pasa por archivos que el usuario descarga y sube a mano.
+
+Archivos de referencia en el repo: `PROGRAM_TEMPLATE.json` (programa comentado, se puede importar tal cual), `ROUTINE_TEMPLATE.json` (rutina comentada) y esta guía.
 
 ## 1. Dónde viven los datos
 
@@ -27,6 +43,7 @@ Esta guía explica cómo GymAI guarda los datos de entrenamiento y cómo se expo
 | `data/goals` | `gymAI_hist_goals_v1` | Objetivos con fecha de inicio y fin | Se combina por `id`. |
 | `data/notes` | `gymAI_hist_notes_v1` | Lesiones y notas | Se combina por `id`. |
 | `data/routineHistory` | `gymAI_hist_routines_v1` | Fotos de las rutinas cuando cambian | Se combina por `id`. |
+| `data/programs` | `gymAI_hist_programs_v1` | Programas (plan con fechas) | Se combina por `id`; si dos dispositivos editan el mismo programa a la vez, gana la edición más reciente. |
 
 Las colecciones sociales (`crews`, `friendships`, `chats`, `notifications`…) no forman parte de los datos de entrenamiento.
 
@@ -58,6 +75,16 @@ Las colecciones sociales (`crews`, `friendships`, `chats`, `notifications`…) n
    - Al borrar una categoría, la lista queda vacía y se guarda `wipedAt`.
    - Al combinar, se descarta todo lo que se **agregó** antes de `wipedAt`. Así un dispositivo con una copia vieja no puede revivir lo borrado.
    - Lo que cuenta es `addedAt` (cuándo entró el registro a la app) y, si no lo tiene, su fecha (`dateISO` o `createdAt`). Un registro con fecha antigua que se agrega **después** de un borrado debe llevar `addedAt` = ahora, o se perdería. Los datos de prueba lo llevan.
+
+9. **Programas.**
+   - Solo hay **un programa activo**. Activar otro cierra el anterior (`status: "done"` y `endDate` = hoy si todavía no había pasado) y lo anota en la bitácora de ambos.
+   - Si se activa un programa cuyo inicio está en el futuro, el inicio se adelanta a hoy (queda anotado).
+   - Cambiar calorías, proteína o grasa **agrega** una entrada a `nutrition.history` y a `adjustments`; nunca sobrescribe.
+   - Los ajustes y la nutrición solo se agregan. Eliminar un programa es una lápida (`deletedAt`).
+10. **Fuente única de los objetivos vigentes.**
+    - Con un programa activo, **sus `goals` son los objetivos vigentes** (Perfil y `coachReport.goals.active`), aunque estén vacíos.
+    - Sin programa activo, lo son los de `data/goals`.
+    - Nunca se copian de uno a otro. El objetivo del perfil del coach (`athlete.goal`) es solo contexto.
 
 **Compatibilidad:** los datos antiguos se siguen leyendo sin migración. Los campos nuevos son opcionales: `at`, `startedAt`, `addedAt`, `revisions`, las medidas `hips` y `neck`, y `wipedAt`.
 
@@ -174,6 +201,37 @@ Un objetivo está vigente cuando `endDate` es `null` y no tiene `deletedAt`.
 
 La clave es `rutina::workout::ejercicio`. Los pesos están en la unidad de ese ejercicio en la rutina.
 
+### Programa (`data/programs`)
+```json
+{ "id": "…", "name": "Definición octubre–diciembre", "phase": "cutting",
+  "status": "planned" | "active" | "done" | "cancelled",
+  "startDate": "2026-10-12", "endDate": "2026-12-06",
+  "goals": [ { "description": "Bajar a 78.5 kg", "targetDate": "2026-12-06", "metric": "weightKg",
+               "startValue": 82, "targetValue": 78.5 } ],
+  "routineIds": [ "idm1abc", "idm1abd" ],
+  "nutrition": { "calories": 2300, "proteinG": 170, "fatMinG": 60, "notes": "…",
+                 "history": [ { "date": "2026-10-07", "calories": 2300, "proteinG": 170, "fatMinG": 60, "reason": "Inicial" } ] },
+  "checkpoints": [ { "date": "2026-11-02", "type": "review" | "deload", "note": "…", "doneDate": "2026-11-02" } ],
+  "adjustments": [ { "date": "2026-10-07", "change": "Programa activado", "reason": "", "source": "user" | "coach" } ],
+  "notes": "…", "createdAt": "…", "updatedAt": "…", "deletedAt": "…opcional…" }
+```
+
+- `routineIds` apunta a rutinas de `data/routines` (ids). Las rutinas **no** se duplican dentro del programa.
+- `goals[].metric`: `weightKg`, `bodyFatPercent`, `waistCm`, `exerciseWeight` (lleva `exercise`) u `other` (sin cálculo automático).
+- `nutrition.history` y `adjustments` solo crecen. `doneDate` aparece cuando se marca un checkpoint como hecho.
+- Un programa **no copia** sesiones ni registro corporal: se asocian por fechas (`startDate`–`endDate`).
+- Qué mide la app como progreso de una meta (se calcula al mostrarla, no se guarda):
+
+  | `metric` | «Valor actual» | Unidad |
+  |---|---|---|
+  | `weightKg` | último peso del registro corporal | kg |
+  | `bodyFatPercent` | último % de grasa del registro corporal | % |
+  | `waistCm` | última cintura del registro corporal | cm |
+  | `exerciseWeight` | el mayor peso registrado en ese ejercicio desde `startDate` (se busca por nombre, sin distinguir mayúsculas ni espacios extra) | la unidad del ejercicio |
+  | `other` | — (seguimiento manual) | — |
+
+  El porcentaje es `(actual − inicio) / (objetivo − inicio)` entre 0 y 100. La barra va en verde si va al ritmo del tiempo transcurrido (con 10 puntos de margen) y en naranja si va atrasada.
+
 ## 4. Unidades y conversión
 
 | `unit` | Significado |
@@ -188,7 +246,7 @@ La clave es `rutina::workout::ejercicio`. Los pesos están en la unidad de ese e
 - El peso corporal va en kg y las medidas en cm.
 - `totalVolumeKg` de una sesión ya está convertido a kg.
 
-## 5. `journalExport` (botones del War Journal)
+## 5. `journalExport` (Super Journal y exportar una sesión)
 
 Siempre va envuelto en `journalExport`. Tiene dos tipos.
 
@@ -214,7 +272,9 @@ Siempre va envuelto en `journalExport`. Tiene dos tipos.
 
 ## 6. `coachReport` (informe compacto para el coach)
 
-Es un resumen, no todo el historial: unos 25 KB con varias semanas de datos. Se genera y descarga solo en el dispositivo, sin enviarlo a ningún servidor.
+Es un resumen, no todo el historial. Con 9 semanas de datos pesa unos 65 KB compacto (el archivo descargado trae sangría y llega a unos 115 KB). Se genera y descarga solo en el dispositivo, sin enviarlo a ningún servidor.
+
+**Programas en el informe (estado actual, schemaVersion 1):** el informe **todavía no trae un bloque `program`**. Lo único que cambia con un programa activo es `goals.active`: pasa a listar **las metas del programa** (`phase` = fase del programa, `startDate` = inicio del programa, `targetDate` = fecha de la meta o fin del programa). No incluye nutrición del programa, checkpoints, ajustes ni semana X de Y. Para eso se necesita el siguiente `schemaVersion` del informe (pendiente).
 
 ```json
 {
@@ -282,27 +342,148 @@ Es un resumen, no todo el historial: unos 25 KB con varias semanas de datos. Se 
   - El promedio semanal de peso cubre las últimas 8 semanas.
 - **`schemaVersion`**: sube cuando cambie el formato. Una Skill debe comprobarlo antes de leer.
 
-## 7. Cómo regenerar los archivos
+## 7. Importar un programa (lo que debe generar la Skill)
 
-- **Informe para el coach:** está en Perfil ▸ «Perfil del coach» ▸ **📋 Informe para el coach**, en Routine Manager ▸ War Journal ▸ **📋 Informe para el coach**, y en Routine Manager ▸ **🗄 Datos**. Desde la consola del navegador (con sesión iniciada): `buildCoachReport()` devuelve el objeto y `exportCoachReport()` lo descarga.
-- **Una sesión:** War Journal ▸ sesión ▸ **⤓**.
-- **Super Journal:** War Journal ▸ elegir periodo ▸ **⤓ Super Journal (coach)**.
-- **Respaldo completo:** Routine Manager ▸ 🗄 Datos ▸ **⤓ Respaldo completo**. Genera `type: "dataBackup"` con todas las listas, el perfil y el perfil del coach.
+**Dónde:** Routine Manager ▸ **🗓 Programas** ▸ **⤒ Importar programa** (también sirve el botón ⤒ Import Routine: la app reconoce el tipo `program`).
 
-## 8. Pantallas de mantenimiento
+**Qué pasa al importar:**
+1. La app valida **todo** el archivo antes de tocar nada. Si algo es inválido, no importa nada y muestra la lista exacta de problemas.
+2. Si es válido, muestra un **resumen** (metas, nutrición, checkpoints, rutinas) y avisos, y el usuario elige **Planeado** o **Activar ahora**.
+3. Se crean las **rutinas con ids nuevos**. Si ya existe una rutina con ese nombre, la nueva se llama `Nombre (2)`, `Nombre (3)`…: nunca se pisa una existente.
+4. Se crea el programa con `routineIds` apuntando a esas rutinas. Su bitácora registra «Programa importado» (`source: "coach"`) y, si trae nutrición, el historial empieza con una entrada «Inicial».
+5. Si se activa, el programa activo anterior se cierra como «terminado».
 
-- **🗄 Datos** (Routine Manager): borra por categoría: sesiones; peso corporal y medidas; objetivos y notas; todo menos rutinas; y por separado, mis rutinas.
+El archivo **no lleva `status`**: lo elige el usuario al importar. Los campos que la app no conoce se ignoran.
+
+### Formato
+
+```json
+{
+  "app": "GymAI",
+  "version": 1,
+  "type": "program",
+  "exportedAt": "2026-10-07T15:00:00.000Z",
+  "program": {
+    "name": "Definición octubre–diciembre",
+    "phase": "cutting",
+    "startDate": "2026-10-12",
+    "endDate": "2026-12-06",
+    "goals": [
+      { "description": "Bajar de 82.0 a 78.5 kg", "targetDate": "2026-12-06", "metric": "weightKg", "startValue": 82.0, "targetValue": 78.5 },
+      { "description": "Press banca de 87.5 a 90 kg", "metric": "exerciseWeight", "exercise": "Press banca con barra", "startValue": 87.5, "targetValue": 90 },
+      { "description": "Dormir al menos 7 h", "metric": "other" }
+    ],
+    "nutrition": { "calories": 2300, "proteinG": 170, "fatMinG": 60, "notes": "Déficit de ~300 kcal" },
+    "checkpoints": [
+      { "date": "2026-11-02", "type": "review", "note": "Revisar ritmo de pérdida" },
+      { "date": "2026-11-16", "type": "deload", "note": "Semana de descarga" }
+    ],
+    "notes": "Prioridad: hombros y espalda.",
+    "routines": [ { "name": "Upper A", "icon": "💪", "complexity": 2, "workouts": [ … ] } ]
+  }
+}
+```
+
+Hay un ejemplo completo e importable en **`PROGRAM_TEMPLATE.json`** (en la raíz del repo).
+
+### Campos y reglas
+
+| Campo | Obligatorio | Regla |
+|---|---|---|
+| `app` | no | si viene, debe ser `"GymAI"` |
+| `version` | **sí** | exactamente `1` |
+| `type` | **sí** | exactamente `"program"` |
+| `program.name` | **sí** | texto, 1 a 80 caracteres |
+| `program.phase` | **sí** | `cutting`, `bulking`, `recomp` o `maintenance` |
+| `program.startDate`, `program.endDate` | **sí** | `AAAA-MM-DD` válidas; el fin no puede ser anterior al inicio; máximo 730 días |
+| `program.goals` | no | lista de hasta 10 metas |
+| `goals[].description` | **sí** | 1 a 120 caracteres |
+| `goals[].metric` | **sí** | `weightKg`, `bodyFatPercent`, `waistCm`, `exerciseWeight` u `other` |
+| `goals[].startValue`, `targetValue` | **sí**, salvo en `other` | número ≥ 0 dentro del límite de la métrica (ver abajo) |
+| `goals[].exercise` | **sí** si la métrica es `exerciseWeight` | nombre del ejercicio, igual que en la rutina (sin distinguir mayúsculas) |
+| `goals[].targetDate` | no | `AAAA-MM-DD`; si falta, la meta usa el fin del programa |
+| `program.nutrition` | no | `calories` 0–10000 · `proteinG` 0–1000 · `fatMinG` 0–500 (números o `null`) · `notes` ≤ 200 caracteres |
+| `program.checkpoints` | no | hasta 40: `date` (`AAAA-MM-DD`), `type` (`review` o `deload`), `note` ≤ 200 |
+| `program.notes` | no | texto ≤ 600 caracteres |
+| `program.routines` | no | hasta 10 rutinas (ver abajo) |
+
+Límite de las métricas: `weightKg` ≤ 500 · `bodyFatPercent` ≤ 75 · `waistCm` ≤ 300 · `exerciseWeight` ≤ 2000 · `other` ≤ 1 000 000.
+
+### Rutinas dentro del programa
+
+Cada elemento de `program.routines` usa el **mismo formato que Import Routine** (`ROUTINE_TEMPLATE.json`); también se acepta envuelto como `{ "type": "routine", "routine": { … } }`. Reglas que la importación **exige** (no corrige en silencio):
+
+| Qué | Regla |
+|---|---|
+| Rutina | `name` 1–60 caracteres · `complexity` 1, 2 o 3 (si falta, 2) · 1 a 14 `workouts` |
+| Workout | `name` 1–60 · hasta 30 ejercicios |
+| Ejercicio | `name` 1–80 · hasta 20 series · `unit` ∈ `kg`, `lb`, `kg_db`, `lb_db` (si falta, `kg`) · `restSeconds` 0–1800 |
+| Músculos | cada `key` ∈ `chest`, `shoulders`, `triceps`, `biceps`, `upperback`, `lats`, `glutes`, `quads`, `hamstrings`, `calves`; `role` = `primary` o `secondary`. **No existe `abs`/core** ni antebrazos ni trapecios: un músculo inválido rechaza el archivo. |
+| Serie | `reps` **entero** 0–500 · `rir` **entero 0–10** · `weight` 0–2000 (0 = peso corporal) |
+| RIR obligatorio | en rutinas `complexity` 2 y 3 toda serie lleva `rir`. En `complexity` 1 (simple) puede faltar. |
+| Opcionales por serie | `type` ∈ `working`, `warmup`, `backoff`, `amrap`, `restpause`, `cluster` · `tempo` · `note` · `dropsets` `[{reps, weight}]` |
+
+### Errores típicos (mensajes reales de la app)
+
+| Problema en el archivo | Mensaje |
+|---|---|
+| RIR fuera de rango | `Rutina «Upper A» › Upper A › Press banca › serie 1: el RIR debe ser un entero de 0 a 10 (llegó 12)` |
+| Falta el RIR | `… › serie 2: falta el RIR (entero de 0 a 10)` |
+| Reps decimales | `… › serie 1: reps debe ser un entero de 0 a 500 (llegó 8.5)` |
+| Unidad inválida | `… › Remo con barra: unidad «stone» no válida (usa kg, lb, kg_db, lb_db)` |
+| Músculo inválido | `… › Press banca: clave de músculo «abs» no válida (usa chest, shoulders, …)` |
+| Fase inválida | `Programa: fase «shred» no válida (usa cutting, bulking, recomp, maintenance)` |
+| Fechas al revés | `Programa: endDate debe ser igual o posterior a startDate` |
+| Métrica inválida | `Meta 3: métrica «vibes» no válida (usa weightKg, bodyFatPercent, waistCm, exerciseWeight, other)` |
+| Falta el ejercicio | `Meta 4: falta el nombre del ejercicio` |
+| Versión | `Versión no soportada: se esperaba "version": 1 y llegó 2` |
+
+### Consejos para que el archivo salga bien a la primera
+
+- **Usa los nombres de ejercicio del histórico** (`exercises[].exercise` del informe). El progreso de las metas `exerciseWeight` y la detección de ejercicios saltados comparan por nombre.
+- **Pon pesos iniciales realistas** a partir de `bestSet` y `lastSession` del informe, **en la unidad de cada ejercicio** (`kg_db` = por mancuerna).
+- **Un nombre de rutina único y descriptivo.** El journal asocia las sesiones por el nombre de la rutina.
+- **Fechas en `AAAA-MM-DD`**, en la fecha local del atleta. Si el usuario activa el programa antes de `startDate`, el inicio se adelanta a hoy.
+- **`fatMinG` es un mínimo** de grasa diaria, no una meta a alcanzar. La app **no registra comidas**: solo guarda las metas de nutrición.
+- **Metas `exerciseWeight`:** `startValue` y `targetValue` en la unidad del ejercicio, y `exercise` igual al nombre dentro de la rutina.
+- **Checkpoints:** una `review` cada 2 a 4 semanas y un `deload` cuando toque descarga.
+- No hace falta enviar `status`, `id` ni campos de la bitácora: la app los crea.
+
+### Qué ve la Skill después de importar
+
+- Las rutinas aparecen como rutinas normales (`activeRoutine` y `exercises` del informe se llenan en cuanto el usuario entrena con ellas).
+- `goals.active` del informe pasa a ser **las metas del programa** (sección 2, regla 10).
+- **Todavía no** viaja en el informe: nutrición del programa, checkpoints, bitácora de ajustes ni «semana X de Y» (ver sección 6).
+
+## 8. Cómo regenerar los archivos
+
+Todas las exportaciones de **toda la cuenta** viven en **Routine Manager ▸ 🗄 Datos ▸ Exportar y respaldo**. Las exportaciones de **un elemento** están en ese elemento.
+
+| Qué | Dónde |
+|---|---|
+| **Informe para el coach** (`coachReport`) | Datos ▸ 📋 Informe para el coach. Desde la consola del navegador (con sesión iniciada): `buildCoachReport()` devuelve el objeto y `exportCoachReport()` lo descarga. |
+| **Super Journal** (`journalExport` tipo `superJournal`) | Datos ▸ elegir periodo (4, 8 o 12 semanas, todo o rango) ▸ ⤓ Super Journal (coach). |
+| **Una sesión** (`journalExport` tipo `journal`) | War Journal ▸ sesión ▸ ⤓ Exportar para el coach. |
+| **Respaldo completo** (`dataBackup`) | Datos ▸ ⤓ Respaldo completo. Incluye todas las listas (también `programs`), el perfil y el perfil del coach. No incluye los Documents y **no se puede restaurar desde la app**. |
+| **Una rutina** | La tarjeta de la rutina ▸ ⤓. |
+| **Importar** una rutina o un programa | Routine Manager ▸ ⤒ Import Routine (rutina) · 🗓 Programas ▸ ⤒ Importar programa (programa). |
+
+## 9. Pantallas de mantenimiento
+
+Todo lo temporal o de desarrollo está agrupado en **Datos ▸ Herramientas**, separado del uso normal:
+
+- **Borrar datos** por categoría: sesiones; peso corporal y medidas; objetivos y notas; todo menos rutinas; y por separado, mis rutinas.
   - Antes de borrar muestra cuántos registros se van, ofrece un respaldo JSON y exige escribir `BORRAR`.
   - Borra en el dispositivo y en la nube de **esa cuenta**.
-  - «Todo menos mis rutinas» conserva las rutinas, el perfil y el perfil del coach.
+  - «Todo menos mis rutinas» conserva las rutinas, el perfil y el perfil del coach, y **sí borra los programas**.
   - Si se borran las rutinas, la app vuelve a cargar las rutinas de ejemplo.
-- **🔍 Modo inspección** (dentro de Datos, provisional): muestra por categoría el conteo, los últimos 5 registros y la última vez guardado en el dispositivo y en la nube.
-  - Es solo lectura.
-  - Para quitarlo, borra el bloque `INSPECTION MODE (temporary)` de `HTML/index.html`, la entrada `inspect:viewInspect` en `renderRM()` y el botón «Modo inspección» en `viewData()`.
+  - El botón «🗑 Borrar sesiones…» del War Journal abre esta misma pantalla.
+- **🔍 Modo inspección** (provisional): por categoría muestra el conteo, los últimos 5 registros y la última vez guardado en el dispositivo y en la nube. Es solo lectura. Para quitarlo, borra el bloque `INSPECTION MODE (temporary)` de `HTML/index.html`, la entrada `inspect:viewInspect` en `renderRM()` y el botón «Modo inspección» en `viewDataTools()`.
+- **🧪 Datos de prueba** (provisional): ver la sección siguiente.
 
-## 9. Datos de prueba
+## 10. Datos de prueba
 
-En Routine Manager ▸ 🗄 Datos ▸ **🧪 Cargar datos de prueba** se agregan a la cuenta unas 9 semanas de historial realista. Sirven para probar la Skill sin tener que entrenar semanas:
+En Routine Manager ▸ 🗄 Datos ▸ Herramientas ▸ **🧪 Cargar datos de prueba** (o **↻ Recargar datos de prueba** si quedó a medias) se agregan a la cuenta unas 9 semanas de historial realista. Sirven para probar la Skill sin tener que entrenar semanas:
 
 - **Rutina** `Upper/Lower Hipertrofia (demo)`: 4 días por semana. Hay ejercicios en `kg`, `kg_db` y `lb`.
 - **Cambio de rutina:** a la mitad del periodo, «Extensión de cuádriceps» se reemplaza por «Sentadilla búlgara». Así se prueba `planSource: "routineHistory"`.
@@ -319,8 +500,13 @@ En Routine Manager ▸ 🗄 Datos ▸ **🧪 Cargar datos de prueba** se agregan
 
 Todo lo agregado lleva `demo: true` o un `id` que empieza con `demo-`. El botón **✕ Quitar datos de prueba** borra exactamente eso, en el dispositivo y en la nube, sin tocar los datos reales. El perfil del coach se queda como esté.
 
-## 10. Límites conocidos
+## 11. Límites conocidos
 
 - `data/journal` es un solo documento. Con unos cientos de sesiones se acercará al límite de 1 MiB de Firestore. Si pasa, habrá que repartir el journal en varios documentos.
 - Las sesiones anteriores a esta versión no tienen `startedAt` ni `at` por serie.
 - La detección de ejercicios saltados usa el nombre del ejercicio. Si se renombra un ejercicio en la rutina, las sesiones viejas lo verán como «saltado» contra la rutina actual, salvo que exista una foto de ese día en `routineHistory`.
+- Programas: si dos dispositivos editan el mismo programa casi a la vez, gana el último en guardar y podría perderse un ajuste hecho en el otro.
+- El informe aún no incluye el programa (nutrición, checkpoints, ajustes, semana X de Y): hoy solo cambia `goals.active`.
+- Los datos de prueba no incluyen ningún programa; se prueba importando `PROGRAM_TEMPLATE.json`.
+- El respaldo completo no incluye los Documents ni se puede restaurar desde la app.
+- No existe el músculo abdomen (`abs`): la lista de 10 músculos es cerrada.
