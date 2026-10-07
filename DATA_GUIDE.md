@@ -56,9 +56,10 @@ Las colecciones sociales (`crews`, `friendships`, `chats`, `notifications`…) n
 7. **Series.** Cada serie nueva lleva `at` (hora en que se registró) y cada sesión nueva `startedAt`. Las sesiones anteriores no tienen esos campos.
 8. **Borrado (pantalla Datos).**
    - Al borrar una categoría, la lista queda vacía y se guarda `wipedAt`.
-   - Al combinar, se descarta todo lo fechado antes de `wipedAt`. Así un dispositivo con una copia vieja no puede revivir lo borrado.
+   - Al combinar, se descarta todo lo que se **agregó** antes de `wipedAt`. Así un dispositivo con una copia vieja no puede revivir lo borrado.
+   - Lo que cuenta es `addedAt` (cuándo entró el registro a la app) y, si no lo tiene, su fecha (`dateISO` o `createdAt`). Un registro con fecha antigua que se agrega **después** de un borrado debe llevar `addedAt` = ahora, o se perdería. Los datos de prueba lo llevan.
 
-**Compatibilidad:** los datos antiguos se siguen leyendo sin migración. Los campos nuevos son opcionales: `at`, `startedAt`, `revisions`, las medidas `hips` y `neck`, y `wipedAt`.
+**Compatibilidad:** los datos antiguos se siguen leyendo sin migración. Los campos nuevos son opcionales: `at`, `startedAt`, `addedAt`, `revisions`, las medidas `hips` y `neck`, y `wipedAt`.
 
 ## 3. Formato de cada registro
 
@@ -76,6 +77,9 @@ Las colecciones sociales (`crews`, `friendships`, `chats`, `notifications`…) n
 - `complexity`: 1 = simple, 2 = normal, 3 = avanzado.
 - `type`, `tempo`, `note` y `dropsets` son opcionales (nivel avanzado). Los tipos de serie son `working`, `warmup`, `backoff`, `amrap`, `restpause` y `cluster`.
 - Músculos (`key`): `chest`, `shoulders`, `triceps`, `biceps`, `upperback`, `lats`, `glutes`, `quads`, `hamstrings`, `calves`. El `role` es `primary` o `secondary`, y un músculo aparece una sola vez por ejercicio.
+  - **La lista es cerrada, son solo esos 10.** No existen `abs`/core, antebrazos ni trapecios.
+  - Al importar una rutina, `back`/`lowerback`/`erector`/`traps` pasan a `upperback` y `forearms` a `biceps`. Cualquier otra clave (por ejemplo `abs`) se descarta y el ejercicio queda sin ese músculo.
+  - Consecuencia: el volumen semanal por músculo nunca incluye abdomen.
 - Validaciones:
   - `reps`: entero ≥ 0.
   - `rir`: entero de 0 a 10.
@@ -267,7 +271,7 @@ Es un resumen, no todo el historial: unos 25 KB con varias semanas de datos. Se 
   - Abarca 8 semanas (de lunes a domingo). La semana actual va con `partial: true`.
 - **`adherence`**
   - Lo planeado sale de `athlete.availability.daysPerWeek`.
-  - `pct` usa solo semanas completas. Es `null` si no hay días por semana configurados.
+  - `pct` usa solo semanas completas. Es `null` si no hay días por semana configurados **o si no hay ninguna sesión en las últimas 8 semanas** (no es un 0 %: es «sin datos»).
 - **`skippedExercises`**
   - Compara cada sesión de las últimas 8 semanas con el plan de ese día: la versión de la rutina vigente esa fecha en `routineHistory`, o la rutina actual si no hay historial.
   - `skipped` son los ejercicios planeados que no aparecen en la sesión.
@@ -302,7 +306,7 @@ En Routine Manager ▸ 🗄 Datos ▸ **🧪 Cargar datos de prueba** se agregan
 
 - **Rutina** `Upper/Lower Hipertrofia (demo)`: 4 días por semana. Hay ejercicios en `kg`, `kg_db` y `lb`.
 - **Cambio de rutina:** a la mitad del periodo, «Extensión de cuádriceps» se reemplaza por «Sentadilla búlgara». Así se prueba `planSource: "routineHistory"`.
-- **Unas 31 sesiones**, con:
+- **Unas 30 sesiones**, con:
   - progresión de cargas cada 2 semanas;
   - una semana de descarga (pesos −10 %, RIR +2);
   - un estancamiento en press banca al final;
