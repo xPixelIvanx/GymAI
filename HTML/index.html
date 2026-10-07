@@ -3344,7 +3344,7 @@ function viewJournalRoutines(){
     <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
     <div class="rm-title">War Journal 📓</div>
     <div class="rm-subtitle">Organized by routine ▸ workout ▸ session.</div>
-    ${names.length?`<div class="rm-toolbar"><select id="sj-period" class="rm-btn ghost" onchange="sjPeriodChanged()"><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="12">Últimas 12 semanas</option><option value="all">Todo el historial</option><option value="custom">Rango personalizado…</option></select><span id="sj-custom" style="display:none;gap:.4rem;align-items:center"><input type="date" id="sj-from" class="rm-btn ghost"><input type="date" id="sj-to" class="rm-btn ghost"></span><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button><button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button><div class="spacer"></div><button class="rm-btn ghost" onclick="rmClearJournal()">Clear Journal</button></div>`:''}
+    ${names.length?`<div class="rm-toolbar"><div class="spacer"></div><button class="rm-btn ghost" onclick="rmGoDataWipe('sessions')">🗑 Borrar sesiones…</button></div>`:''}
     ${body}`;
 }
 
@@ -3442,10 +3442,6 @@ function jBackRoutines(){rmView='j-routines';renderRM();}
 function jBackWorkouts(){rmView='j-workouts';renderRM();}
 function jBackSessions(){rmView='j-sessions';renderRM();}
 function rmGoJournal(){jRoutine=null;jWorkout=null;jSessionId=null;rmView='j-routines';renderRM();}
-function rmClearJournal(){
-  if(!confirm('Permanently clear the entire war journal?'))return;
-  listMarkWiped('journal');saveJournal([]);renderRM();showToast('Journal cleared');
-}
 
 /* ══════════════════════════════════════
    SESSION PLAYER
@@ -5292,8 +5288,7 @@ function coachSectionHTML(){
     const cs=c.coachSettings;
     chips.push(`<span class="bl-chip">⚙️ ${L(cs.mode)} · ${L(cs.reactionLevel)} · ${L(cs.responseLength)}</span>`);
     body=`<div class="bl-chips" style="margin-bottom:12px">${chips.join('')}</div>
-      <button class="pf-social-btn" style="width:100%" onclick="coachOpen()">✎ Editar perfil del coach</button>
-      <button class="pf-social-btn" style="width:100%;margin-top:8px" onclick="exportCoachReport()">📋 Informe para el coach</button>`;
+      <button class="pf-social-btn" style="width:100%" onclick="coachOpen()">✎ Editar perfil del coach</button>`;
   }
   return `<div class="section-label" style="margin-top:22px">Perfil del coach</div>
     <div class="cv-section"><div class="cv-gauge">${body}</div></div>`;
@@ -6750,6 +6745,10 @@ function exportSession(id){
   downloadFile('gymai-journal-'+safeName(e.workoutName)+'-'+String(e.dateISO).slice(0,10)+'.json',JSON.stringify(buildJournalExport([e],false),null,2));
   showToast('Sesión exportada para el coach');
 }
+/* period picker + button of the Super Journal export (lives in Datos ▸ Exportar y respaldo) */
+function superJournalControlsHTML(){
+  return `<select id="sj-period" class="rm-btn ghost" onchange="sjPeriodChanged()"><option value="4">Últimas 4 semanas</option><option value="8">Últimas 8 semanas</option><option value="12">Últimas 12 semanas</option><option value="all">Todo el historial</option><option value="custom">Rango personalizado…</option></select><span id="sj-custom" style="display:none;gap:.4rem;align-items:center"><input type="date" id="sj-from" class="rm-btn ghost"><input type="date" id="sj-to" class="rm-btn ghost"></span><button class="rm-btn" onclick="exportSuperJournal()">⤓ Super Journal (coach)</button>`;
+}
 function sjPeriod(){
   const v=(document.getElementById('sj-period')||{}).value||'all';
   if(v==='all')return null;
@@ -6919,18 +6918,20 @@ const DATA_CATS={
 };
 let dataCat=null;
 function rmGoData(){dataCat=null;rmView='data';renderRM();}
+function rmGoDataWipe(cat){dataCat=cat;rmView='data';renderRM();}
 function viewData(){
   if(dataCat&&DATA_CATS[dataCat])return viewDataConfirm();
   return `
     <div class="rm-crumb">LIBRARY / DATOS</div>
     <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
     <div class="rm-title">Datos 🗄</div>
-    <div class="rm-subtitle">Exporta tu información y haz un respaldo de tus datos.</div>
+    <div class="rm-subtitle">Exporta tu información y haz un respaldo de tus datos. Aquí viven las exportaciones de toda la cuenta; la exportación de una sesión o de una rutina está en la sesión o en la rutina.</div>
     <div class="section-label">Exportar y respaldo</div>
     <div class="rm-toolbar">
       <button class="rm-btn" onclick="exportCoachReport()">📋 Informe para el coach</button>
       <button class="rm-btn ghost" onclick="dataBackup('all')">⤓ Respaldo completo</button>
     </div>
+    <div class="rm-toolbar">${superJournalControlsHTML()}</div>
     ${viewDataTools()}`;
 }
 function dataBackup(cat){
