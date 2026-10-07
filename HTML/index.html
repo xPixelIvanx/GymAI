@@ -1287,7 +1287,7 @@ input::placeholder,textarea::placeholder{color:var(--gray);opacity:1}
 .action-btn{border-width:0 1px 0 0!important;border-color:var(--border)!important}
 .action-btn:last-child{border-right:none!important}
 .pf-social-btn b{color:var(--ember)}
-.rm-btn.danger,.rm-card-actions .del{border-color:var(--ember)!important;color:var(--ember)!important}
+.rm-btn.danger,.rm-card-actions .del{background:transparent!important;border-color:var(--ember)!important;color:var(--ember)!important}
 .player-unit-toggle.on{background:var(--white)!important;color:#000!important}
 .pw-btn,.gm-actions button,.rm-btn,.pf-social-btn{font-size:12.5px}
 .player-next{font-size:14px}
@@ -1755,6 +1755,9 @@ input,select,textarea{transition:border-color .2s ease,background-color .2s ease
 
 <!-- goals + injuries/notes history (rendered by JS) -->
 <div id="gn-modal" class="modal-overlay"></div>
+
+<!-- programs: create/edit, adjustment, checkpoint, close, import preview (rendered by JS) -->
+<div id="pg-modal" class="modal-overlay"></div>
 
 <!-- exercise muscle-group editor (rendered by JS) -->
 <div id="muscle-modal" class="modal-overlay"></div>
@@ -2328,11 +2331,12 @@ function renderRM(){
     routines:viewRoutines, workouts:viewWorkouts, workout:viewWorkout,
     'j-routines':viewJournalRoutines, 'j-workouts':viewJournalWorkouts,
     'j-sessions':viewJournalSessions, 'j-session':viewJournalSession,
-    docs:viewDocs, aigen:viewAIGen, data:viewData, inspect:viewInspect
+    docs:viewDocs, aigen:viewAIGen, data:viewData, inspect:viewInspect,
+    programs:viewPrograms, program:viewProgram
   };
   root.innerHTML=(views[rmView]||viewRoutines)();
   // entrance only when the view itself changes (edits re-render the same view silently)
-  let fxKey;try{fxKey=[rmView,rmRoutineId,rmWorkoutId,rmEdit,jRoutine,jWorkout,jSessionId,dataCat].join('|');}catch(e){fxKey=rmView;}
+  let fxKey;try{fxKey=[rmView,rmRoutineId,rmWorkoutId,rmEdit,jRoutine,jWorkout,jSessionId,dataCat,rmProgramId].join('|');}catch(e){fxKey=rmView;}
   if(fxKey!==renderRM.fxKey){renderRM.fxKey=fxKey;if(window.fxEnter)fxEnter(root);}
 }
 
@@ -2367,6 +2371,7 @@ function viewRoutines(){
       <button class="rm-btn ghost" onclick="rmGoDocs()">📄 Documents</button>
       <div class="spacer"></div>
       <button class="rm-btn ghost" onclick="triggerImport()">⤒ Import Routine</button>
+      <button class="rm-btn ghost" onclick="rmGoPrograms()">🗓 Programas</button>
       <button class="rm-btn ghost" onclick="rmGoJournal()">📓 War Journal</button>
       <button class="rm-btn ghost" onclick="rmGoData()">🗄 Datos</button>
     </div>
@@ -3301,8 +3306,6 @@ const PG_METRICS={weightKg:'Peso corporal (kg)',bodyFatPercent:'% de grasa',wais
 const PG_METRIC_MAX={weightKg:500,bodyFatPercent:75,waistCm:300,exerciseWeight:2000,other:1000000};
 const PG_CP_TYPES={review:'Revisión',deload:'Descarga'};
 const PG_NUTR_MAX={calories:10000,proteinG:1000,fatMinG:500};
-/* number in [0,max] or null (empty / invalid) */
-function pgNum(v,max){if(v===''||v==null)return null;const n=+v;return isFinite(n)&&n>=0&&n<=max?Math.round(n*100)/100:null;}
 function pgDayNum(ymd){const a=String(ymd).split('-').map(Number);return Math.round(Date.UTC(a[0],a[1]-1,a[2])/864e5);}
 /* fills defaults for every field; keeps unknown fields */
 function normProgram(p){
@@ -3409,6 +3412,303 @@ function programNextCheckpoint(p){
   const today=todayStr(),pend=p.checkpoints.map((c,i)=>Object.assign({idx:i},c)).filter(c=>!c.doneDate).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
   return {next:pend.find(c=>c.date>=today)||null,overdue:pend.filter(c=>c.date<today)};
 }
+
+
+/* ── PROGRAMAS: pantalla (Routine Manager ▸ 🗓 Programas) ── */
+let rmProgramId=null;   // programa abierto en el detalle
+let pgState=null;       // ventana abierta: {mode:'edit'|'adjust'|'checkpoint'|'close'|'import'|'importError'}
+let pgDraft=null;       // copia de trabajo del formulario de crear/editar
+const pgQ=id=>String(id).replace(/[^A-Za-z0-9_-]/g,'');
+function rmGoPrograms(){rmView='programs';rmProgramId=null;renderRM();}
+function rmOpenProgram(id){rmProgramId=id;rmView='program';renderRM();}
+function pgDates(p){return validYMD(p.startDate)&&validYMD(p.endDate)?fmtBodyDate(p.startDate,true)+' → '+fmtBodyDate(p.endDate,true):'—';}
+function pgWeekText(p){
+  const tot=programWeeks(p);
+  if(p.status==='planned'){const d=pgDayNum(p.startDate)-pgDayNum(todayStr());return d>0?'Empieza en '+d+' día'+(d!==1?'s':''):'Planeado · '+tot+' semanas';}
+  if(p.status==='active'){
+    if(pgDayNum(todayStr())>pgDayNum(p.endDate))return 'Pasó su fecha de fin: ciérralo cuando quieras';
+    const w=programWeekNow(p);return w===0?'Aún no empieza':'Semana '+w+' de '+tot;}
+  return tot+' semana'+(tot!==1?'s':'');
+}
+/* paced against time: bar is green when on schedule or reached, ember when behind */
+function pgPace(p,g,pr){
+  if(pr.reached)return 'done';if(pr.pct==null)return '';
+  const end=validYMD(g.targetDate)?g.targetDate:p.endDate,t0=pgDayNum(p.startDate),t1=pgDayNum(end),now=pgDayNum(todayStr());
+  const exp=t1<=t0?100:Math.max(0,Math.min(100,Math.round(100*(now-t0)/(t1-t0))));
+  return pr.pct>=exp-10?'ontrack':'behind';
+}
+function pgGoalRowHTML(p,g){
+  const pr=programGoalProgress(p,g),u=pr.unit?' '+esc(pr.unit):'';
+  const val=x=>x==null?'—':esc(x)+u;
+  const line=g.metric==='other'?'Seguimiento manual':esc(PG_METRICS[g.metric]||g.metric)+(g.metric==='exerciseWeight'&&g.exercise?' · '+esc(g.exercise):'')+' · '+val(g.startValue)+' → '+val(g.targetValue)+' · ahora '+val(pr.current);
+  return `<div class="bl-row">
+    <div class="bl-row-top"><span class="bl-date">${esc(g.description)}</span><span class="bl-chip">${pr.pct==null?'—':pr.pct+'%'}</span></div>
+    <div class="bl-note" style="margin:0 0 8px">${line}${validYMD(g.targetDate)?' · meta '+fmtBodyDate(g.targetDate,true):''}</div>
+    <div class="rf-goal-bar"><div class="rf-goal-fill ${pgPace(p,g,pr)}" style="width:${pr.pct==null?0:pr.pct}%"></div></div>
+  </div>`;
+}
+function pgCardHTML(p){
+  const act=p.status==='active',dim=(p.status==='done'||p.status==='cancelled')?' style="opacity:.65"':'';
+  let extra='';
+  if(act){
+    const cp=programNextCheckpoint(p);
+    extra=`<div class="bl-note" style="margin:10px 0 8px">${cp.next?'Próximo checkpoint: <b>'+fmtBodyDate(cp.next.date,true)+'</b> · '+esc(PG_CP_TYPES[cp.next.type]||cp.next.type):'Sin checkpoints próximos'}${cp.overdue.length?' · <b>'+cp.overdue.length+' vencido'+(cp.overdue.length!==1?'s':'')+'</b>':''}</div>`
+      +(p.goals.length?p.goals.map(g=>pgGoalRowHTML(p,g)).join(''):'<div class="bl-hint" style="margin:0 0 8px">Este programa no tiene metas.</div>');}
+  return `<div class="rm-card"${dim}>
+    <div class="rm-card-title">${esc(p.name)}</div>
+    <div class="rm-card-sub">${esc(pgWeekText(p))} · ${pgDates(p)}</div>
+    <div class="rm-card-tags"><span class="rm-tag">${esc(PG_STATUS_LABELS[p.status])}</span>${p.phase?`<span class="rm-tag">${esc(COACH_LABELS[p.phase]||p.phase)}</span>`:''}<span class="rm-tag">${p.goals.length} meta${p.goals.length!==1?'s':''}</span><span class="rm-tag">${p.routineIds.length} rutina${p.routineIds.length!==1?'s':''}</span></div>
+    ${extra}
+    <div class="rm-card-actions"><button class="open" onclick="rmOpenProgram('${pgQ(p.id)}')">Abrir</button>${p.status==='planned'?`<button onclick="pgActivate('${pgQ(p.id)}')">▶ Activar</button>`:''}</div>
+  </div>`;
+}
+function viewPrograms(){
+  const all=programsAll(),act=all.filter(p=>p.status==='active'),planned=all.filter(p=>p.status==='planned'),old=all.filter(p=>p.status==='done'||p.status==='cancelled');
+  const block=(label,list)=>list.length?`<div class="section-label" style="margin-top:22px">${label}</div><div class="rm-grid">${list.map(pgCardHTML).join('')}</div>`:'';
+  return `
+    <div class="rm-crumb">LIBRARY / PROGRAMAS</div>
+    <button class="rm-back" onclick="rmBackToRoutines()">‹ All Routines</button>
+    <div class="rm-title">Programas 🗓</div>
+    <div class="rm-subtitle">Un programa es un plan con fechas: metas, rutinas, nutrición y checkpoints. Solo uno puede estar activo; tus sesiones y tu registro corporal se asocian a él por fechas.</div>
+    <div class="rm-toolbar">
+      <button class="rm-btn" onclick="pgOpenEdit(null)">＋ Nuevo programa</button>
+      <button class="rm-btn ghost" onclick="triggerImport()">⤒ Importar programa</button>
+    </div>
+    ${all.length?block('Activo',act)+block('Planeados',planned)+block('Terminados',old):`<div class="rm-empty"><div class="big">🗓</div>Aún no hay programas.<br>Crea uno a mano o importa el archivo que te genera tu coach.</div>`}`;
+}
+function viewProgram(){
+  const p=programById(rmProgramId);
+  if(!p){rmView='programs';return viewPrograms();}
+  const id=pgQ(p.id),act=p.status==='active',cp=programNextCheckpoint(p);
+  const acts=[];
+  if(p.status==='planned')acts.push(`<button class="rm-btn" onclick="pgActivate('${id}')">▶ Activar</button>`);
+  if(act)acts.push(`<button class="rm-btn" onclick="pgOpenAdjust('${id}')">＋ Registrar ajuste</button><button class="rm-btn ghost" onclick="pgOpenCheckpoint('${id}')">＋ Checkpoint</button>`);
+  acts.push(`<button class="rm-btn ghost" onclick="pgOpenEdit('${id}')">✎ Editar</button>`);
+  if(act)acts.push(`<button class="rm-btn danger" onclick="pgOpenClose('${id}')">■ Cerrar programa</button>`);
+  const nu=p.nutrition;
+  const nuChips=[nu.calories!=null?`<span class="bl-chip">🍽 <b>${esc(nu.calories)}</b> kcal</span>`:'',nu.proteinG!=null?`<span class="bl-chip"><b>${esc(nu.proteinG)}</b> g proteína</span>`:'',nu.fatMinG!=null?`<span class="bl-chip"><b>${esc(nu.fatMinG)}</b> g grasa mín.</span>`:''].join('');
+  const nuHist=nu.history.slice().reverse().map(h=>`<div class="bl-row"><div class="bl-row-top"><span class="bl-date">${fmtBodyDate(h.date,true)}</span><span class="bl-chip">${h.calories==null?'—':esc(h.calories)} kcal · ${h.proteinG==null?'—':esc(h.proteinG)} g prot · ${h.fatMinG==null?'—':esc(h.fatMinG)} g grasa</span></div>${h.reason?`<div class="bl-note" style="margin:0">${esc(h.reason)}</div>`:''}</div>`).join('');
+  const today=todayStr();
+  const cps=p.checkpoints.map((c,i)=>({c,i})).sort((a,b)=>String(a.c.date).localeCompare(String(b.c.date))).map(({c,i})=>{
+    const st=c.doneDate?`✓ hecho ${fmtBodyDate(c.doneDate,true)}`:(c.date<today?'<b>vencido</b>':'pendiente');
+    return `<div class="bl-row"><div class="bl-row-top"><span class="bl-date">${fmtBodyDate(c.date,true)} · ${esc(PG_CP_TYPES[c.type]||c.type)}</span><span class="bl-acts">${c.doneDate?'':`<button title="Marcar hecho" onclick="pgCheckpointDone('${id}',${i})">✓</button>`}</span></div><div class="bl-note" style="margin:0">${st}${c.note?' · '+esc(c.note):''}</div></div>`;}).join('');
+  const adj=p.adjustments.slice().reverse().map(a=>`<div class="bl-row"><div class="bl-row-top"><span class="bl-date">${fmtBodyDate(a.date,true)}</span><span class="bl-chip">${a.source==='coach'?'Coach':'Tú'}</span></div><div class="bl-note" style="margin:0;color:var(--white)">${esc(a.change)}</div>${a.reason?`<div class="bl-note" style="margin:4px 0 0">${esc(a.reason)}</div>`:''}</div>`).join('');
+  const rts=p.routineIds.map(rid=>{const r=findRoutine(rid);return r?`<button class="pf-social-btn" onclick="rmOpenRoutine('${pgQ(r.id)}')">${esc(r.icon||'📋')} ${esc(r.name)}</button>`:`<span class="bl-chip">Rutina eliminada</span>`;}).join('');
+  return `
+    <div class="rm-crumb">LIBRARY / PROGRAMAS / ${esc(p.name).toUpperCase()}</div>
+    <button class="rm-back" onclick="rmGoPrograms()">‹ Programas</button>
+    <div class="rm-title">${esc(p.name)}</div>
+    <div class="rm-subtitle">${esc(PG_STATUS_LABELS[p.status])}${p.phase?' · '+esc(COACH_LABELS[p.phase]||p.phase):''} · ${esc(pgWeekText(p))} · ${pgDates(p)}${act&&cp.next?' · próximo checkpoint '+fmtBodyDate(cp.next.date,true):''}</div>
+    <div class="rm-toolbar">${acts.join('')}</div>
+    ${p.notes?`<div class="bl-note" style="margin:0 0 6px">${esc(p.notes)}</div>`:''}
+    <div class="section-label" style="margin-top:22px">Metas</div>
+    ${p.goals.length?p.goals.map(g=>pgGoalRowHTML(p,g)).join(''):'<div class="bl-hint">Sin metas.</div>'}
+    <div class="section-label" style="margin-top:22px">Rutinas</div>
+    ${rts?`<div class="rm-toolbar">${rts}</div>`:'<div class="bl-hint">Sin rutinas asignadas.</div>'}
+    <div class="section-label" style="margin-top:22px">Nutrición vigente</div>
+    ${nuChips?`<div class="bl-chips" style="margin-bottom:10px">${nuChips}</div>`:'<div class="bl-hint">Sin metas de nutrición.</div>'}
+    ${nu.notes?`<div class="bl-note" style="margin:0 0 10px">${esc(nu.notes)}</div>`:''}
+    ${nuHist?`<div class="bl-sec">Historial de nutrición</div>${nuHist}`:''}
+    <div class="section-label" style="margin-top:22px">Checkpoints</div>
+    ${cps||'<div class="bl-hint">Sin checkpoints.</div>'}
+    <div class="section-label" style="margin-top:22px">Bitácora de ajustes</div>
+    ${adj||'<div class="bl-hint">Aún no hay ajustes.</div>'}`;
+}
+/* ---- acciones directas ---- */
+function pgActivate(id){
+  const p=programById(id);if(!p)return;
+  const cur=programActive();
+  if(cur&&cur.id!==p.id&&!confirm('Se cerrará «'+cur.name+'» (queda como terminado) y se activará «'+p.name+'». ¿Continuar?'))return;
+  if(!cur&&!confirm('¿Activar «'+p.name+'»?'))return;
+  programActivate(id);renderRM();renderProfile();showToast('Programa activado');
+}
+function pgCheckpointDone(id,i){programCheckpointDone(id,i);renderRM();showToast('Checkpoint hecho');}
+/* ---- ventana (crear/editar, ajuste, checkpoint, cerrar) ---- */
+function pgClose(){document.getElementById('pg-modal').classList.remove('show');pgState=null;pgDraft=null;}
+function pgOpenModal(mode,extra){pgState=Object.assign({mode},extra||{});document.getElementById('pg-modal').classList.add('show');renderPgModal();}
+function pgHead(title){return `<div class="pw-top"><div class="pw-step-count">🗓 ${title}</div><button class="pw-close" onclick="pgClose()">✕</button></div>`;}
+function pgOpenEdit(id){
+  const p=id?programById(id):null;
+  if(id&&!p)return;
+  const d=new Date(),e=new Date();e.setDate(e.getDate()+8*7-1);
+  pgDraft=p?{id:p.id,name:p.name,phase:p.phase||'',startDate:p.startDate,endDate:p.endDate,notes:p.notes,routineIds:p.routineIds.slice(),
+      goals:p.goals.map(g=>({description:g.description,metric:g.metric,startValue:g.startValue==null?'':g.startValue,targetValue:g.targetValue==null?'':g.targetValue,targetDate:g.targetDate||'',exercise:g.exercise||''})),
+      nutrition:{},activate:false}
+    :{id:null,name:'',phase:'cutting',startDate:todayStr(),endDate:ymdOf(e),notes:'',routineIds:[],goals:[],nutrition:{calories:'',proteinG:'',fatMinG:'',notes:''},activate:false};
+  pgOpenModal('edit');
+}
+function pgReadForm(){
+  const d=pgDraft;if(!d||!document.getElementById('pg-name'))return;
+  const v=id=>{const el=document.getElementById(id);return el?el.value:'';};
+  d.name=v('pg-name');d.startDate=v('pg-start');d.endDate=v('pg-end');d.notes=v('pg-notes');
+  if(!d.id){d.nutrition={calories:v('pg-nu-cal'),proteinG:v('pg-nu-pro'),fatMinG:v('pg-nu-fat'),notes:v('pg-nu-notes')};}
+  d.goals.forEach((g,i)=>{g.description=v('pg-g'+i+'-d');g.metric=v('pg-g'+i+'-m')||g.metric;g.startValue=v('pg-g'+i+'-s');g.targetValue=v('pg-g'+i+'-t');g.targetDate=v('pg-g'+i+'-dt');g.exercise=v('pg-g'+i+'-ex');});
+}
+function pgSet(k,val){pgReadForm();pgDraft[k]=val;renderPgModal();}
+function pgToggleRoutine(rid){pgReadForm();const a=pgDraft.routineIds,i=a.indexOf(rid);if(i>=0)a.splice(i,1);else a.push(rid);renderPgModal();}
+function pgAddGoal(){pgReadForm();if(pgDraft.goals.length>=10){showToast('Máximo 10 metas');return;}pgDraft.goals.push({description:'',metric:'weightKg',startValue:'',targetValue:'',targetDate:'',exercise:''});renderPgModal();}
+function pgRemoveGoal(i){pgReadForm();pgDraft.goals.splice(i,1);renderPgModal();}
+function pgGoalMetric(i,m){pgReadForm();pgDraft.goals[i].metric=m;renderPgModal();}
+/* a goal as the form / the import file give it → cleaned goal, or null with the errors pushed */
+function pgNumStrict(v,max){
+  if(v===''||v==null)return {ok:true,val:null};
+  if(typeof v!=='number'&&typeof v!=='string')return {ok:false};
+  const n=typeof v==='number'?v:Number(String(v).trim().replace(',','.'));
+  return isFinite(n)&&n>=0&&n<=max?{ok:true,val:Math.round(n*100)/100}:{ok:false};
+}
+function pgCleanGoal(g,where,errs){
+  const n0=errs.length;g=g||{};
+  const desc=typeof g.description==='string'?g.description.trim():'';
+  if(!desc)errs.push(where+': falta la descripción');else if(desc.length>120)errs.push(where+': la descripción pasa de 120 caracteres');
+  const metric=g.metric||'other';
+  if(!PG_METRICS[metric])errs.push(where+': métrica «'+metric+'» no válida (usa '+Object.keys(PG_METRICS).join(', ')+')');
+  const max=PG_METRIC_MAX[metric]||1000000;
+  const s=pgNumStrict(g.startValue,max),t=pgNumStrict(g.targetValue,max);
+  if(!s.ok)errs.push(where+': valor inicial no válido (0 a '+max+')');
+  if(!t.ok)errs.push(where+': valor objetivo no válido (0 a '+max+')');
+  if(PG_METRICS[metric]&&metric!=='other'){if(s.ok&&s.val==null)errs.push(where+': falta el valor inicial');if(t.ok&&t.val==null)errs.push(where+': falta el valor objetivo');}
+  const ex=typeof g.exercise==='string'?g.exercise.trim():'';
+  if(metric==='exerciseWeight'&&!ex)errs.push(where+': falta el nombre del ejercicio');
+  const td=g.targetDate==null||g.targetDate===''?'':String(g.targetDate);
+  if(td&&!validYMD(td))errs.push(where+': fecha meta no válida (usa AAAA-MM-DD)');
+  if(errs.length>n0)return null;
+  const out={description:desc,metric,startValue:s.val,targetValue:t.val};
+  if(td)out.targetDate=td;if(metric==='exerciseWeight')out.exercise=ex;
+  return out;
+}
+function pgSaveEdit(){
+  pgReadForm();const d=pgDraft,errs=[];
+  const name=(d.name||'').trim();
+  if(!name)errs.push('Falta el nombre');else if(name.length>80)errs.push('El nombre pasa de 80 caracteres');
+  if(PG_PHASES.indexOf(d.phase)<0)errs.push('Elige la fase');
+  if(!validYMD(d.startDate))errs.push('Fecha de inicio no válida');
+  if(!validYMD(d.endDate))errs.push('Fecha de fin no válida');
+  if(validYMD(d.startDate)&&validYMD(d.endDate)){if(d.endDate<d.startDate)errs.push('El fin debe ser igual o posterior al inicio');else if(pgDayNum(d.endDate)-pgDayNum(d.startDate)>730)errs.push('Un programa no puede durar más de 2 años');}
+  const goals=[];d.goals.forEach((g,i)=>{const c=pgCleanGoal(g,'Meta '+(i+1),errs);if(c)goals.push(c);});
+  let nu=null;
+  if(!d.id){
+    const c=pgNumStrict(d.nutrition.calories,PG_NUTR_MAX.calories),p=pgNumStrict(d.nutrition.proteinG,PG_NUTR_MAX.proteinG),f=pgNumStrict(d.nutrition.fatMinG,PG_NUTR_MAX.fatMinG);
+    if(!c.ok)errs.push('Calorías no válidas (0 a '+PG_NUTR_MAX.calories+')');if(!p.ok)errs.push('Proteína no válida (0 a '+PG_NUTR_MAX.proteinG+')');if(!f.ok)errs.push('Grasa mínima no válida (0 a '+PG_NUTR_MAX.fatMinG+')');
+    nu={calories:c.val,proteinG:p.val,fatMinG:f.val,notes:(d.nutrition.notes||'').trim()};
+  }
+  if(errs.length){showToast(errs[0]+(errs.length>1?' (+'+(errs.length-1)+' más)':''));return;}
+  const routineIds=d.routineIds.filter(rid=>!!findRoutine(rid));
+  if(d.id){
+    programUpdate(d.id,p=>{
+      const ch=[];
+      if(p.phase!==d.phase)ch.push('fase');if(p.startDate!==d.startDate||p.endDate!==d.endDate)ch.push('fechas');
+      if(JSON.stringify(p.goals)!==JSON.stringify(goals))ch.push('metas');if(JSON.stringify(p.routineIds)!==JSON.stringify(routineIds))ch.push('rutinas');
+      Object.assign(p,{name,phase:d.phase,startDate:d.startDate,endDate:d.endDate,notes:(d.notes||'').trim(),goals,routineIds});
+      if(ch.length)p.adjustments.push({date:todayStr(),change:'Plan editado: '+ch.join(', '),reason:'',source:'user'});});
+    pgClose();renderRM();renderProfile();showToast('Programa guardado');
+  }else{
+    const rec=programCreate({name,phase:d.phase,startDate:d.startDate,endDate:d.endDate,goals,routineIds,nutrition:nu,checkpoints:[],notes:(d.notes||'').trim()},!!d.activate,'user');
+    pgClose();rmOpenProgram(rec.id);renderProfile();showToast(d.activate?'Programa creado y activado':'Programa creado');
+  }
+}
+function pgOpenAdjust(id){
+  const p=programById(id);if(!p)return;
+  pgOpenModal('adjust',{id,source:'user',cal:p.nutrition.calories==null?'':p.nutrition.calories,pro:p.nutrition.proteinG==null?'':p.nutrition.proteinG,fat:p.nutrition.fatMinG==null?'':p.nutrition.fatMinG,change:'',reason:''});
+}
+function pgReadSimple(){
+  const s=pgState,v=id=>{const el=document.getElementById(id);return el?el.value:null;};
+  [['pg-a-change','change'],['pg-a-reason','reason'],['pg-a-cal','cal'],['pg-a-pro','pro'],['pg-a-fat','fat'],['pg-c-date','date'],['pg-c-note','note'],['pg-x-note','note']].forEach(kv=>{const x=v(kv[0]);if(x!=null)s[kv[1]]=x;});
+}
+function pgPick(k,val){pgReadSimple();pgState[k]=val;renderPgModal();}
+function pgSaveAdjust(){
+  pgReadSimple();const s=pgState,errs=[];
+  const c=pgNumStrict(s.cal,PG_NUTR_MAX.calories),pr=pgNumStrict(s.pro,PG_NUTR_MAX.proteinG),f=pgNumStrict(s.fat,PG_NUTR_MAX.fatMinG);
+  if(!c.ok)errs.push('Calorías no válidas');if(!pr.ok)errs.push('Proteína no válida');if(!f.ok)errs.push('Grasa mínima no válida');
+  const change=(s.change||'').trim();
+  if(errs.length){showToast(errs[0]);return;}
+  const p0=programById(s.id),nu={calories:c.val,proteinG:pr.val,fatMinG:f.val};
+  const changesNu=['calories','proteinG','fatMinG'].some(k=>nu[k]!=null&&nu[k]!==p0.nutrition[k]);
+  if(!change&&!changesNu){showToast('Escribe el ajuste o cambia calorías, proteína o grasa');return;}
+  programAddAdjustment(s.id,{change,reason:(s.reason||'').trim(),source:s.source,nutrition:nu});
+  pgClose();renderRM();showToast('Ajuste registrado');
+}
+function pgOpenCheckpoint(id){const t=new Date();t.setDate(t.getDate()+7);pgOpenModal('checkpoint',{id,type:'review',date:ymdOf(t),note:''});}
+function pgSaveCheckpoint(){
+  pgReadSimple();const s=pgState;
+  if(!validYMD(s.date)){showToast('Fecha no válida');return;}
+  programAddCheckpoint(s.id,{date:s.date,type:s.type,note:(s.note||'').trim()});
+  pgClose();renderRM();showToast('Checkpoint agregado');
+}
+function pgOpenClose(id){pgOpenModal('close',{id,result:'done',note:''});}
+function pgSaveClose(){
+  pgReadSimple();const s=pgState;
+  programClose(s.id,s.result,(s.note||'').trim());
+  pgClose();renderRM();renderProfile();showToast(s.result==='done'?'Programa terminado':'Programa cancelado');
+}
+function renderPgModal(){
+  const root=document.getElementById('pg-modal');if(!root||!pgState)return;
+  const m=pgState.mode,seg=(fn,opts,cur)=>`<div class="cp-seg">${opts.map(o=>`<button class="${o[0]===cur?'sel':''}" onclick="${fn}('${o[0]}')">${o[1]}</button>`).join('')}</div>`;
+  const scroll=root.querySelector('.pw-body')?root.querySelector('.pw-body').scrollTop:0;
+  const nav=(label,fn)=>`<div class="pw-nav"><button class="pw-btn ghost" onclick="pgClose()">Cancelar</button><button class="pw-btn primary" onclick="${fn}()">${label}</button></div>`;
+  const txt=(id,label,val,ph,extra)=>`<div class="bl-field"><label for="${id}">${label}</label><input id="${id}" class="crew-input" value="${esc(val==null?'':val)}" placeholder="${ph||''}" ${extra||''}></div>`;
+  const num=(id,label,val,unit)=>`<div class="bl-field"><label for="${id}">${label}</label><div class="bl-inp"><input id="${id}" class="crew-input" type="number" inputmode="decimal" min="0" step="any" value="${esc(val==null?'':val)}" placeholder="—"><span>${unit}</span></div></div>`;
+  let body='',title='';
+  if(m==='edit'){
+    const d=pgDraft,isNew=!d.id;title=isNew?'NUEVO PROGRAMA':'EDITAR PROGRAMA';
+    const exNames=[];routines.forEach(r=>(r.workouts||[]).forEach(w=>(w.exercises||[]).forEach(e=>{if(exNames.indexOf(e.name)<0)exNames.push(e.name);})));
+    const goalRows=d.goals.map((g,i)=>`<div class="bl-row">
+        <div class="bl-row-top"><span class="bl-date">Meta ${i+1}</span><span class="bl-acts"><button class="del" title="Quitar" onclick="pgRemoveGoal(${i})">🗑</button></span></div>
+        ${txt('pg-g'+i+'-d','Descripción',g.description,'ej. Bajar a 80 kg','maxlength="120"')}
+        <div class="bl-field"><label for="pg-g${i}-m">Métrica</label><select id="pg-g${i}-m" class="crew-input" onchange="pgGoalMetric(${i},this.value)">${Object.keys(PG_METRICS).map(k=>`<option value="${k}" ${g.metric===k?'selected':''}>${PG_METRICS[k]}</option>`).join('')}</select></div>
+        ${g.metric==='exerciseWeight'?txt('pg-g'+i+'-ex','Ejercicio (como se llama en tu rutina)',g.exercise,'ej. Press banca','list="pg-ex-list" maxlength="80"'):''}
+        <div class="bl-grid">${num('pg-g'+i+'-s','Valor inicial',g.startValue,'')}${num('pg-g'+i+'-t','Valor objetivo',g.targetValue,'')}</div>
+        <div class="bl-field"><label for="pg-g${i}-dt">Fecha meta (opcional)</label><input id="pg-g${i}-dt" class="crew-input" type="date" value="${esc(g.targetDate||'')}"></div>
+      </div>`).join('');
+    body=`
+      ${txt('pg-name','Nombre',d.name,'ej. Definición octubre–diciembre','maxlength="80"')}
+      <div class="bl-field"><label>Fase</label>${seg('pgSetPhase',PG_PHASES.map(k=>[k,COACH_LABELS[k]]),d.phase)}</div>
+      <div class="bl-grid">
+        <div class="bl-field"><label for="pg-start">Inicio</label><input id="pg-start" class="crew-input" type="date" value="${esc(d.startDate)}"></div>
+        <div class="bl-field"><label for="pg-end">Fin</label><input id="pg-end" class="crew-input" type="date" value="${esc(d.endDate)}"></div>
+      </div>
+      <div class="bl-sec">Rutinas del programa</div>
+      ${routines.length?`<div class="cp-musc" style="margin-bottom:12px">${routines.map(r=>`<button class="${d.routineIds.indexOf(r.id)>=0?'sel':''}" onclick="pgToggleRoutine('${pgQ(r.id)}')">${esc(r.icon||'📋')} ${esc(r.name)}</button>`).join('')}</div>`:'<div class="bl-hint">Aún no tienes rutinas.</div>'}
+      <div class="bl-sec">Metas</div>
+      <datalist id="pg-ex-list">${exNames.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+      ${goalRows}
+      <button class="rm-btn ghost" style="width:100%;margin-bottom:12px" onclick="pgAddGoal()">＋ Agregar meta</button>
+      ${isNew?`<div class="bl-sec">Nutrición (metas diarias)</div>
+        <div class="bl-grid">${num('pg-nu-cal','Calorías',d.nutrition.calories,'kcal')}${num('pg-nu-pro','Proteína',d.nutrition.proteinG,'g')}</div>
+        <div class="bl-grid">${num('pg-nu-fat','Grasa mínima',d.nutrition.fatMinG,'g')}${txt('pg-nu-notes','Notas',d.nutrition.notes,'','maxlength="200"')}</div>`
+        :'<div class="bl-hint">Para cambiar calorías, proteína o grasa usa «Registrar ajuste» en el programa: así queda guardado el historial.</div>'}
+      <div class="bl-field"><label for="pg-notes">Notas</label><textarea id="pg-notes" class="crew-input" rows="3" maxlength="600" placeholder="Opcional">${esc(d.notes||'')}</textarea></div>
+      ${isNew?`<div class="bl-field"><label>Estado al guardar</label>${seg('pgSetActivate',[['0','Planeado'],['1','Activar ahora']],d.activate?'1':'0')}</div>`:''}`;
+  }else if(m==='adjust'){
+    const s=pgState;title='REGISTRAR AJUSTE';
+    body=`${txt('pg-a-change','Ajuste',s.change,'ej. Bajo carbohidratos 30 g, sumo 2,000 pasos','maxlength="200"')}
+      ${txt('pg-a-reason','Motivo',s.reason,'ej. peso estancado 2 semanas','maxlength="200"')}
+      <div class="bl-field"><label>Origen</label>${seg('pgSetSource',[['user','Tú'],['coach','Coach']],s.source)}</div>
+      <div class="bl-sec">Nutrición (cambia solo lo que ajustes)</div>
+      <div class="bl-grid">${num('pg-a-cal','Calorías',s.cal,'kcal')}${num('pg-a-pro','Proteína',s.pro,'g')}</div>
+      <div class="bl-grid">${num('pg-a-fat','Grasa mínima',s.fat,'g')}<div></div></div>
+      <div class="bl-hint">Si cambias un valor de nutrición, el anterior queda en el historial.</div>`;
+  }else if(m==='checkpoint'){
+    const s=pgState;title='NUEVO CHECKPOINT';
+    body=`<div class="bl-field"><label for="pg-c-date">Fecha</label><input id="pg-c-date" class="crew-input" type="date" value="${esc(s.date)}"></div>
+      <div class="bl-field"><label>Tipo</label>${seg('pgSetCpType',Object.keys(PG_CP_TYPES).map(k=>[k,PG_CP_TYPES[k]]),s.type)}</div>
+      ${txt('pg-c-note','Nota',s.note,'Opcional','maxlength="200"')}`;
+  }else if(m==='close'){
+    const s=pgState;title='CERRAR PROGRAMA';
+    body=`<div class="bl-field"><label>Resultado</label>${seg('pgSetResult',[['done','Terminado'],['cancelled','Cancelado']],s.result)}</div>
+      ${txt('pg-x-note','Nota final',s.note,'Opcional','maxlength="200"')}
+      <div class="bl-hint">El programa queda en el historial con su fecha de cierre. Tus sesiones y tu registro corporal no se tocan.</div>`;
+  }else if(m==='import'||m==='importError'){
+    title=pgState.title;body=pgState.body;
+  }
+  const foot=m==='edit'?nav(pgDraft.id?'✓ Guardar':'✓ Crear programa','pgSaveEdit'):m==='adjust'?nav('✓ Registrar','pgSaveAdjust'):m==='checkpoint'?nav('✓ Agregar','pgSaveCheckpoint'):m==='close'?nav('■ Cerrar programa','pgSaveClose'):pgState.foot;
+  root.innerHTML=`<div class="pw-card" style="max-width:560px">${pgHead(title)}<div class="pw-body" style="margin-top:16px">${body}</div>${foot}</div>`;
+  const b=root.querySelector('.pw-body');if(b)b.scrollTop=scroll;
+}
+function pgSetPhase(v){pgSet('phase',v);}
+function pgSetActivate(v){pgSet('activate',v==='1');}
+function pgSetSource(v){pgPick('source',v);}
+function pgSetCpType(v){pgPick('type',v);}
+function pgSetResult(v){pgPick('result',v);}
 
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
