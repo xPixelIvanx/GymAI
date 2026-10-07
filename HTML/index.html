@@ -6207,11 +6207,6 @@ function computeMuscleBests(){
   }
   return out;
 }
-/* Bench/chest preserves the original signature + exact control cases (ratio 1.0) */
-function calcBenchRank(enfoque,pesoCorporal,pesoLevantado,repeticiones){
-  return calcRank(enfoque,pesoCorporal,pesoLevantado,repeticiones,1.0);
-}
-
 /* tier/division metadata for a level index */
 function rankMeta(nivel){
   const name=RANK_TIERS[nivel];
@@ -6494,7 +6489,7 @@ async function crewDeclineInvite(inviteId){
 let _chatUid=null, _chatUnsub=null, _chatMsgs=[], _chatMode='dm';
 function chatPairId(uid){return [cloudState.user.uid,uid].sort().join('__');}
 
-/* ---- notifications inbox subscription ---- */
+/* ---- notifications inbox subscription ---- (SIN CONECTAR: nadie la llama todavía; junto con notifyFriends es una función a medio hacer) ---- */
 function cloudSubscribeNotifs(){
   if(!window.Cloud||!window.Cloud.subscribeNotifs||!cloudState.user)return;
   cloudState.unsubNotifs=window.Cloud.subscribeNotifs(cloudState.user.uid,items=>{
@@ -6554,7 +6549,7 @@ async function notifClear(id){
   try{await window.Cloud.clearNotif(cloudState.user.uid,id);}catch(e){}
   renderNotifs();
 }
-/* notify all my accepted friends (best-effort) */
+/* notify all my accepted friends (best-effort) — SIN CONECTAR: nadie la llama todavía */
 function notifyFriends(notif){
   if(!window.Cloud||!window.Cloud.pushNotif||!cloudState.user)return;
   const myName=(loadProfile()&&loadProfile().name)||cloudState.user.name||'Atleta';
@@ -7286,11 +7281,6 @@ function crewOpenMember(uid){
 /* ══════════════════════════════════════
    EXPORT / IMPORT
 ══════════════════════════════════════ */
-function exportBackup(){
-  const data={app:'GymAI',version:2,type:'backup',exportedAt:new Date().toISOString(),routines,documents:loadDocs(),journal:loadJournal()};
-  downloadFile('gymai-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(data,null,2));
-  showToast('Backup exported · '+routines.length+' routines');
-}
 /* ── COACH EXPORT: journalExport (one session) & Super Journal (everything) ── */
 function exportSessionObj(e){
   return {id:e.id,date:e.dateISO,routine:e.routineName,workout:e.workoutName,
