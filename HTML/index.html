@@ -3488,6 +3488,7 @@ function viewProgram(){
   if(p.status==='planned')acts.push(`<button class="rm-btn" onclick="pgActivate('${id}')">▶ Activar</button>`);
   if(act)acts.push(`<button class="rm-btn" onclick="pgOpenAdjust('${id}')">＋ Registrar ajuste</button><button class="rm-btn ghost" onclick="pgOpenCheckpoint('${id}')">＋ Checkpoint</button>`);
   acts.push(`<button class="rm-btn ghost" onclick="pgOpenEdit('${id}')">✎ Editar</button>`);
+  if(p.status!=='planned')acts.push(`<button class="rm-btn ghost" onclick="exportProgramReport('${id}')">⤓ Informe del programa</button>`);
   if(act)acts.push(`<button class="rm-btn danger" onclick="pgOpenClose('${id}')">■ Cerrar programa</button>`);
   const nu=p.nutrition;
   const nuChips=[nu.calories!=null?`<span class="bl-chip">🍽 <b>${esc(nu.calories)}</b> kcal</span>`:'',nu.proteinG!=null?`<span class="bl-chip"><b>${esc(nu.proteinG)}</b> g proteína</span>`:'',nu.fatMinG!=null?`<span class="bl-chip"><b>${esc(nu.fatMinG)}</b> g grasa mín.</span>`:''].join('');
@@ -7439,11 +7440,18 @@ function programReportBlock(p,plannedPerWeek){
       weight:'startKg = último registro de los 7 días previos al inicio (o el primero después). weeklyRatePct = cambio % del peso por semana; null con menos de 7 días entre registros.',
       pace:'onTrack si actualPct está a 10 puntos o menos de expectedPct (avance esperado por tiempo); reached si llegó al 100 %; null si no hay dato.'}};
 }
-function buildCoachReport(){
+/* buildCoachReport()                       → informe general: últimas 8 semanas (+ bloque program si hay uno activo)
+   buildCoachReport({program:p})            → informe del programa: todo limitado a [startDate, min(endDate, hoy)] */
+function buildCoachReport(opts){
+  const sp=opts&&opts.program?normProgram(opts.program):null;
   const now=new Date(),dAgo=n=>{const d=new Date();d.setDate(d.getDate()-n);return d;};
-  const W8=weekStartOf(dAgo(49)),D14=dAgo(14).toISOString(),D112=ymdOf(dAgo(112)),curWeek=weekStartOf(now);
-  const J=loadJournal().slice().sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));   // oldest → newest
-  const inW8=J.filter(s=>weekStartOf(s.dateISO)>=W8);
+  const lo=sp?sp.startDate:null,hi=sp?(sp.endDate<todayStr()?sp.endDate:todayStr()):null;
+  const D14y=sp?(()=>{const t=new Date(hi+'T12:00:00');t.setDate(t.getDate()-14);const y=ymdOf(t);return y<lo?lo:y;})():null;
+  const W8=sp?lo:weekStartOf(dAgo(49)),D14=dAgo(14).toISOString(),D112=sp?lo:ymdOf(dAgo(112)),curWeek=weekStartOf(now);
+  const inWin=iso=>sp?(ymdOf(iso)>=lo&&ymdOf(iso)<=hi):weekStartOf(iso)>=W8;
+  const recent=s=>sp?ymdOf(s.dateISO)>=D14y:s.dateISO>=D14;
+  const J=loadJournal().filter(s=>!sp||inWin(s.dateISO)).sort((a,b)=>String(a.dateISO).localeCompare(String(b.dateISO)));   // oldest → newest
+  const inW8=J.filter(s=>inWin(s.dateISO));
   const coach=coachProfileFull();
 
   // per exercise (name + unit): best set ever, last session, recent trend of the top set vs target
@@ -7455,7 +7463,7 @@ function buildCoachReport(){
     const top=sets.reduce((a,t)=>(+t.actual.weight>+a.actual.weight||(+t.actual.weight===+a.actual.weight&&+t.actual.reps>+a.actual.reps))?t:a);
     e.hist.push({date:ymdOf(s.dateISO),iso:s.dateISO,routine:s.routineName,workout:s.workoutName,sets,top});
   }));
-  const exercises=Object.values(ex).filter(e=>e.hist.some(h=>weekStartOf(h.iso)>=W8)).map(e=>{
+  const exercises=Object.values(ex).filter(e=>e.hist.some(h=>inWin(h.iso))).map(e=>{
     const last=e.hist[e.hist.length-1],trend=e.hist.slice(-6).map(h=>({
       date:h.date,sets:h.sets.length,top:rsSet(h.top.actual),target:rsSet(h.top.target||{}),
       metTarget:+h.top.actual.reps>=+(h.top.target||{}).reps&&+h.top.actual.weight>=+(h.top.target||{}).weight,
@@ -7466,12 +7474,14 @@ function buildCoachReport(){
   }).sort((a,b)=>String(b.lastSession.date).localeCompare(String(a.lastSession.date)));
 
   // weekly direct sets per muscle (sets where the muscle is primary) + adherence, last 8 weeks
-  const weeks=[];for(let i=7;i>=0;i--){weeks.push({weekStart:weekStartOf(dAgo(i*7)),sessions:0,directSets:{}});}
+  const weeks=sp?pgBuckets(sp,hi).map(b=>({weekStart:b.from,to:b.to,partial:b.partial,sessions:0,directSets:{}})):[];   // program: 7-day blocks from startDate
+  if(!sp)for(let i=7;i>=0;i--){const ws=weekStartOf(dAgo(i*7));weeks.push({weekStart:ws,partial:ws===curWeek,sessions:0,directSets:{}});}   // otherwise: Monday weeks
   const wk={};weeks.forEach(w=>wk[w.weekStart]=w);
-  inW8.forEach(s=>{const w=wk[weekStartOf(s.dateISO)];if(!w)return;w.sessions++;
+  const wkOf=iso=>sp?weeks.find(w=>ymdOf(iso)>=w.weekStart&&ymdOf(iso)<=w.to):wk[weekStartOf(iso)];
+  inW8.forEach(s=>{const w=wkOf(s.dateISO);if(!w)return;w.sessions++;
     (s.exercises||[]).forEach(x=>{const n=(x.sets||[]).filter(t=>t&&t.actual&&+t.actual.reps>0).length;if(!n)return;
       (x.muscles||[]).filter(m=>m.role==='primary').forEach(m=>{w.directSets[m.key]=(w.directSets[m.key]||0)+n;});});});
-  const planned=coach.availability.daysPerWeek||null,full=weeks.filter(w=>w.weekStart!==curWeek),done=full.reduce((a,w)=>a+w.sessions,0);
+  const planned=coach.availability.daysPerWeek||null,full=weeks.filter(w=>!w.partial),done=full.reduce((a,w)=>a+w.sessions,0);
 
   // skipped / incomplete exercises vs the plan of that day
   const skipped=[],skipCount={};
@@ -7485,9 +7495,10 @@ function buildCoachReport(){
   });
 
   // body: dated series (16 weeks) + weekly average weight (8 weeks)
-  const BL=loadBodyLog().slice().reverse(),blRecent=BL.filter(e=>e.date>=D112);
-  const wAvg={};BL.filter(e=>e.weightKg!=null&&weekStartOf(e.date+'T12:00:00')>=W8).forEach(e=>{const k=weekStartOf(e.date+'T12:00:00');(wAvg[k]=wAvg[k]||[]).push(e.weightKg);});
-  const L=bodyLogLatest();
+  const BL=loadBodyLog().slice().reverse(),blRecent=BL.filter(e=>e.date>=D112&&(!sp||e.date<=hi));
+  const wkKey=d=>{if(!sp)return weekStartOf(d+'T12:00:00');const w=weeks.find(x=>d>=x.weekStart&&d<=x.to);return w?w.weekStart:null;};
+  const wAvg={};BL.filter(e=>e.weightKg!=null&&(sp?e.date>=lo&&e.date<=hi:weekStartOf(e.date+'T12:00:00')>=W8)).forEach(e=>{const k=wkKey(e.date);if(!k)return;(wAvg[k]=wAvg[k]||[]).push(e.weightKg);});
+  const L=bodyLogLatest(sp?hi:undefined);
 
   // goals: dated goals in force + per-exercise weight goals + the coach-profile goal
   const exGoals=Object.entries(loadGoals()).map(([k,g])=>{const [rn,wn,en]=k.split('::');
@@ -7495,18 +7506,18 @@ function buildCoachReport(){
     return {routine:rn,workout:wn,exercise:en,unit:e?(e.unit||'kg'):null,startWeight:g.startWeight,targetWeight:g.targetWeight,startDate:ymdOf(g.startISO),deadline:ymdOf(g.deadlineISO)};});
   const notes=listLive('notes');
   const active=J.length?J[J.length-1].routineName:null;
-  const pgAct=programActive();
+  const pgAct=sp||programActive();
 
   return {app:'GymAI',type:'coachReport',schemaVersion:COACH_REPORT_SCHEMA,generatedAt:now.toISOString(),
     units:{weights:'en la unidad de cada ejercicio (campo unit)',legend:UNIT_INFO,bodyWeight:'kg',measurements:'cm',
       toKg:'lb × 0.453592; *_db = por mancuerna (×2 para el total)'},
-    window:{weeks8From:W8,sessionDetailFrom:ymdOf(D14),bodySeriesFrom:D112,today:todayStr()},
+    window:{weeks8From:W8,sessionDetailFrom:sp?D14y:ymdOf(D14),bodySeriesFrom:D112,today:todayStr(),scope:sp?'program':'last8weeks',from:sp?lo:W8,to:sp?hi:todayStr()},
     athlete:coach,
-    goals:{coachProfileGoal:coach.goal,active:goalsActive().map(g=>({phase:g.phase,description:g.description,startDate:g.startDate,targetDate:g.targetDate})),
+    goals:{coachProfileGoal:coach.goal,active:(sp?pgGoalsAsActive(sp):goalsActive()).map(g=>({phase:g.phase,description:g.description,startDate:g.startDate,targetDate:g.targetDate})),
       exerciseGoals:exGoals},
     program:pgAct?programReportBlock(pgAct,planned):null,
     injuriesAndNotes:{activeInjuries:notes.filter(n=>n.type==='injury'&&!n.resolvedDate).map(n=>({date:n.date,text:n.text})),
-      recent:notes.filter(n=>n.date>=D112).map(n=>({date:n.date,type:n.type,text:n.text,resolvedDate:n.resolvedDate}))},
+      recent:notes.filter(n=>n.date>=D112&&(!sp||n.date<=hi)).map(n=>({date:n.date,type:n.type,text:n.text,resolvedDate:n.resolvedDate}))},
     body:{latest:L,
       weight:blRecent.filter(e=>e.weightKg!=null).map(e=>({date:e.date,kg:e.weightKg})),
       bodyFat:blRecent.filter(e=>e.bodyFatPercent!=null).map(e=>({date:e.date,pct:e.bodyFatPercent,method:e.bodyFatMethod})),
@@ -7514,11 +7525,11 @@ function buildCoachReport(){
       weeklyAvgWeightKg:Object.keys(wAvg).sort().map(k=>({weekStart:k,avg:round1(wAvg[k].reduce((a,b)=>a+b,0)/wAvg[k].length),n:wAvg[k].length}))},
     activeRoutine:compactRoutine(routines.find(r=>r.name===active)||null),
     exercises,
-    weeklyDirectSetsByMuscle:weeks.map(w=>({weekStart:w.weekStart,partial:w.weekStart===curWeek,sets:w.directSets})),
-    adherence:{plannedPerWeek:planned,weeks:weeks.map(w=>({weekStart:w.weekStart,done:w.sessions,partial:w.weekStart===curWeek})),
+    weeklyDirectSetsByMuscle:weeks.map(w=>({weekStart:w.weekStart,partial:w.partial,sets:w.directSets})),
+    adherence:{plannedPerWeek:planned,weeks:weeks.map(w=>({weekStart:w.weekStart,done:w.sessions,partial:w.partial})),
       fullWeeks:full.length,done,planned:planned?planned*full.length:null,pct:planned&&full.length&&inW8.length?Math.round(100*done/(planned*full.length)):null},
     skippedExercises:{bySession:skipped,countByExercise:skipCount},
-    recentSessions:J.filter(s=>s.dateISO>=D14).reverse().map(s=>({date:s.dateISO,startedAt:s.startedAt||null,routine:s.routineName,workout:s.workoutName,
+    recentSessions:J.filter(recent).reverse().map(s=>({date:s.dateISO,startedAt:s.startedAt||null,routine:s.routineName,workout:s.workoutName,
       durationMin:Math.max(1,Math.round((s.durationSec||0)/60)),
       exercises:(s.exercises||[]).map(x=>({name:x.name,unit:x.unit||'kg',sets:(x.sets||[]).map(t=>({set:t.setNum,target:rsSet(t.target||{}),actual:rsSet(t.actual||{}),at:t.at||null}))}))}))
   };
@@ -7528,6 +7539,16 @@ function exportCoachReport(){
   const r=buildCoachReport();
   downloadFile('gymai-coach-report-'+todayStr()+'.json',JSON.stringify(r));   // compacto: sin sangrías, para que el archivo pese lo menos posible
   showToast('Informe para el coach descargado');
+}
+/* mismo formato que el informe general, pero limitado a las fechas del programa (y con resumen final si ya terminó) */
+function exportProgramReport(id){
+  if(!cloudState.user){showToast('Inicia sesión para generar el informe');return;}
+  const p=programById(id);if(!p)return;
+  if(!validYMD(p.startDate)||!validYMD(p.endDate)){showToast('El programa no tiene fechas válidas');return;}
+  const r=buildCoachReport({program:p});
+  const slug=String(p.name).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30)||'programa';
+  downloadFile('gymai-program-report-'+slug+'-'+todayStr()+'.json',JSON.stringify(r));
+  showToast('Informe del programa descargado');
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
