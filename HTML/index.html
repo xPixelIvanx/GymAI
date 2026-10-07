@@ -4269,7 +4269,7 @@ function playerSave(){
   const journal=loadJournal();journal.unshift(entry);saveJournal(journal);
   playerClose();
   showToast('Session saved to War Journal');
-  rmView='journal';renderRM();
+  jRoutine=entry.routineName;jWorkout=entry.workoutName;jSessionId=entry.id;rmView='j-session';renderRM();   // lands on the session just saved
   if(typeof cloudSyncMe==='function')cloudSyncMe();
 }
 
