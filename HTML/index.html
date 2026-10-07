@@ -2126,7 +2126,8 @@ const SYNC_LISTS={
   profileHistory:{key:'gymAI_hist_profile_v1',dateOf:x=>x.addedAt||x.createdAt},
   goals:{key:'gymAI_hist_goals_v1',dateOf:x=>x.addedAt||x.createdAt},
   notes:{key:'gymAI_hist_notes_v1',dateOf:x=>x.addedAt||x.createdAt},
-  routineHistory:{key:'gymAI_hist_routines_v1',dateOf:x=>x.addedAt||x.createdAt}
+  routineHistory:{key:'gymAI_hist_routines_v1',dateOf:x=>x.addedAt||x.createdAt},
+  programs:{key:'gymAI_hist_programs_v1',dateOf:x=>x.addedAt||x.createdAt}
 };
 /* wipedAt drops records ADDED before the wipe. addedAt = when the record entered the app; legacy
    records without it fall back to their own date. Backdated records added after a wipe (demo
@@ -3282,7 +3283,136 @@ function importFromFile(file){
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 4 · JOURNAL Y SESIÓN
+   ║  § 4 · PROGRAMAS
+   ║  Planes con ventana de fechas: metas, rutinas, nutrición, checkpoints y bitácora de ajustes. Importar programa.
+   ╚══════════════════════════════════════════════════════════════════════╝ */
+
+/* ══════════════════════════════════════
+   PROGRAMAS — plan con ventana de fechas (users/{uid}/data/programs, se combina por id).
+   Un programa NO duplica registros: sesiones y registro corporal siguen donde están y se
+   asocian al programa por sus fechas.
+   FUENTE ÚNICA DE OBJETIVOS ACTIVOS: con un programa activo, SUS metas son los objetivos vigentes
+   (Perfil, informe); sin programa activo lo son los de data/goals. Nunca se copian de uno a otro.
+   Nutrición y ajustes solo se agregan (history / adjustments), nunca se sobrescriben.
+══════════════════════════════════════ */
+const PG_PHASES=['cutting','bulking','recomp','maintenance'];
+const PG_STATUS_LABELS={planned:'Planeado',active:'Activo',done:'Terminado',cancelled:'Cancelado'};
+const PG_METRICS={weightKg:'Peso corporal (kg)',bodyFatPercent:'% de grasa',waistCm:'Cintura (cm)',exerciseWeight:'Peso en un ejercicio',other:'Otra (sin cálculo automático)'};
+const PG_METRIC_MAX={weightKg:500,bodyFatPercent:75,waistCm:300,exerciseWeight:2000,other:1000000};
+const PG_CP_TYPES={review:'Revisión',deload:'Descarga'};
+const PG_NUTR_MAX={calories:10000,proteinG:1000,fatMinG:500};
+/* number in [0,max] or null (empty / invalid) */
+function pgNum(v,max){if(v===''||v==null)return null;const n=+v;return isFinite(n)&&n>=0&&n<=max?Math.round(n*100)/100:null;}
+function pgDayNum(ymd){const a=String(ymd).split('-').map(Number);return Math.round(Date.UTC(a[0],a[1]-1,a[2])/864e5);}
+/* fills defaults for every field; keeps unknown fields */
+function normProgram(p){
+  p=p||{};const nu=p.nutrition||{};
+  return Object.assign({},p,{
+    name:typeof p.name==='string'?p.name:'',
+    phase:PG_PHASES.indexOf(p.phase)>=0?p.phase:null,
+    status:PG_STATUS_LABELS[p.status]?p.status:'planned',
+    goals:Array.isArray(p.goals)?p.goals:[],
+    routineIds:Array.isArray(p.routineIds)?p.routineIds:[],
+    nutrition:Object.assign({},nu,{calories:nu.calories==null?null:nu.calories,proteinG:nu.proteinG==null?null:nu.proteinG,fatMinG:nu.fatMinG==null?null:nu.fatMinG,
+      notes:typeof nu.notes==='string'?nu.notes:'',history:Array.isArray(nu.history)?nu.history:[]}),
+    checkpoints:Array.isArray(p.checkpoints)?p.checkpoints:[],
+    adjustments:Array.isArray(p.adjustments)?p.adjustments:[],
+    notes:typeof p.notes==='string'?p.notes:''});
+}
+function programsAll(){
+  const ord={active:0,planned:1,done:2,cancelled:3};
+  return listLive('programs').map(normProgram).sort((a,b)=>(ord[a.status]-ord[b.status])||String(b.startDate).localeCompare(String(a.startDate)));
+}
+function programById(id){return programsAll().find(p=>p.id===id)||null;}
+/* only one is active; if two devices activated different ones, the most recently updated wins */
+function programActive(){
+  const act=listLive('programs').map(normProgram).filter(p=>p.status==='active')
+    .sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')));
+  return act[0]||null;
+}
+function programUpdate(id,fn){
+  const list=listLoad('programs'),i=list.findIndex(x=>x&&x.id===id&&!x.deletedAt);if(i<0)return null;
+  const rec=normProgram(list[i]);fn(rec);rec.updatedAt=new Date().toISOString();list[i]=rec;listSave('programs',list);return rec;
+}
+/* f = {name,phase,startDate,endDate,goals,routineIds,nutrition,checkpoints,notes}; source 'user'|'coach' */
+function programCreate(f,activate,source){
+  const now=new Date().toISOString(),today=todayStr(),nu=f.nutrition||{};
+  const hasNu=nu.calories!=null||nu.proteinG!=null||nu.fatMinG!=null;
+  const rec=normProgram({id:uid(),name:f.name,phase:f.phase,status:'planned',startDate:f.startDate,endDate:f.endDate,
+    goals:f.goals||[],routineIds:f.routineIds||[],
+    nutrition:{calories:nu.calories,proteinG:nu.proteinG,fatMinG:nu.fatMinG,notes:nu.notes||'',
+      history:hasNu?[{date:today,calories:nu.calories==null?null:nu.calories,proteinG:nu.proteinG==null?null:nu.proteinG,fatMinG:nu.fatMinG==null?null:nu.fatMinG,reason:'Inicial'}]:[]},
+    checkpoints:f.checkpoints||[],
+    adjustments:[{date:today,change:source==='coach'?'Programa importado':'Programa creado',reason:'',source:source==='coach'?'coach':'user'}],
+    notes:f.notes||'',createdAt:now,updatedAt:now});
+  const list=listLoad('programs');list.push(rec);listSave('programs',list);
+  if(activate)programActivate(rec.id);
+  return rec;
+}
+/* activating closes the active one (status "done" + endDate) and logs it on both programs */
+function programActivate(id){
+  const list=listLoad('programs'),today=todayStr(),now=new Date().toISOString();
+  const t=list.find(x=>x&&x.id===id&&!x.deletedAt);if(!t)return false;
+  if(t.status==='active')return true;
+  const log=(rec,change,reason)=>{rec.adjustments=(Array.isArray(rec.adjustments)?rec.adjustments:[]).concat([{date:today,change,reason,source:'user'}]);rec.updatedAt=now;};
+  const prevs=list.filter(x=>x&&!x.deletedAt&&x.id!==id&&x.status==='active');
+  prevs.forEach(p=>{p.status='done';if(!validYMD(p.endDate)||p.endDate>today)p.endDate=today;log(p,'Programa cerrado','Se activó «'+t.name+'»');});
+  t.status='active';
+  let reason=prevs.length?'Reemplaza a «'+prevs.map(p=>p.name).join('», «')+'»':'';
+  if(validYMD(t.startDate)&&t.startDate>today){reason+=(reason?'. ':'')+'Inicio adelantado de '+t.startDate+' a hoy';t.startDate=today;}
+  log(t,'Programa activado',reason);
+  listSave('programs',list);return true;
+}
+function programClose(id,status,note){
+  return programUpdate(id,p=>{const today=todayStr();p.status=status==='cancelled'?'cancelled':'done';
+    if(!validYMD(p.endDate)||p.endDate>today)p.endDate=today;
+    p.adjustments.push({date:today,change:p.status==='done'?'Programa terminado':'Programa cancelado',reason:note||'',source:'user'});});
+}
+function programAddCheckpoint(id,cp){return programUpdate(id,p=>{p.checkpoints.push({date:cp.date,type:cp.type==='deload'?'deload':'review',note:cp.note||''});});}
+function programCheckpointDone(id,idx){return programUpdate(id,p=>{const c=p.checkpoints[idx];if(c&&!c.doneDate)c.doneDate=todayStr();});}
+/* a = {change, reason, source, nutrition:{calories,proteinG,fatMinG}}. A nutrition value that differs from the
+   current one also appends to nutrition.history; nothing is ever overwritten without a trace. */
+function programAddAdjustment(id,a){
+  return programUpdate(id,p=>{
+    const today=todayStr(),nu=a.nutrition||{},cur=p.nutrition,ch=[];
+    [['calories','kcal'],['proteinG','g de proteína'],['fatMinG','g de grasa mínima']].forEach(kv=>{
+      const k=kv[0];if(nu[k]!=null&&nu[k]!==cur[k]){ch.push(kv[1]+': '+(cur[k]==null?'—':cur[k])+' → '+nu[k]);cur[k]=nu[k];}});
+    if(ch.length)cur.history.push({date:today,calories:cur.calories,proteinG:cur.proteinG,fatMinG:cur.fatMinG,reason:a.reason||''});
+    p.adjustments.push({date:today,change:[a.change,ch.length?'Nutrición — '+ch.join('; '):''].filter(Boolean).join(' · '),reason:a.reason||'',source:a.source==='coach'?'coach':'user'});
+  });
+}
+/* heaviest logged weight for an exercise since a date, with its unit (sessions already hold the unit) */
+function pgExerciseBest(name,sinceYMD){
+  const want=String(name||'').trim().toLowerCase();let best=null,unit=null;
+  loadJournal().forEach(s=>{
+    if(sinceYMD&&ymdOf(s.dateISO)<sinceYMD)return;
+    (s.exercises||[]).forEach(x=>{if(String(x.name||'').trim().toLowerCase()!==want)return;
+      (x.sets||[]).forEach(st=>{const w=+(st&&st.actual&&st.actual.weight)||0;if(best==null||w>best){best=w;unit=x.unit||'kg';}});});});
+  return best==null?null:{value:best,unit};
+}
+/* progress of one goal from data that already exists (body log / journal); "other" has no automatic value */
+function programGoalProgress(p,g){
+  let cur=null,unit='';const L=bodyLogLatest();
+  if(g.metric==='weightKg'){cur=L.weightKg;unit='kg';}
+  else if(g.metric==='bodyFatPercent'){cur=L.bodyFatPercent;unit='%';}
+  else if(g.metric==='waistCm'){cur=L.measurementsCm.waist;unit='cm';}
+  else if(g.metric==='exerciseWeight'){const b=pgExerciseBest(g.exercise,p.startDate);if(b){cur=b.value;unit=unitLabel(b.unit);}}
+  if(cur===undefined)cur=null;
+  const s=g.startValue,t=g.targetValue;let pct=null;
+  if(cur!=null&&s!=null&&t!=null)pct=s===t?(cur===t?100:0):Math.max(0,Math.min(100,Math.round(100*(cur-s)/(t-s))));
+  return {current:cur,unit,pct,reached:pct!=null&&pct>=100};
+}
+function programWeeks(p){return Math.max(1,Math.ceil((pgDayNum(p.endDate)-pgDayNum(p.startDate)+1)/7));}
+/* 0 = not started yet; capped at the last week */
+function programWeekNow(p){const d=pgDayNum(todayStr())-pgDayNum(p.startDate);return d<0?0:Math.min(programWeeks(p),Math.floor(d/7)+1);}
+function programNextCheckpoint(p){
+  const today=todayStr(),pend=p.checkpoints.map((c,i)=>Object.assign({idx:i},c)).filter(c=>!c.doneDate).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  return {next:pend.find(c=>c.date>=today)||null,overdue:pend.filter(c=>c.date<today)};
+}
+
+
+/* ╔══════════════════════════════════════════════════════════════════════╗
+   ║  § 5 · JOURNAL Y SESIÓN
    ║  Player de sesión y War Journal (rutina ▸ workout ▸ sesión ▸ detalle).
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
@@ -3737,7 +3867,7 @@ function playerToggleMax(){
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 5 · PROGRESIONES IA
+   ║  § 6 · PROGRESIONES IA
    ║  Motor Random Forest, reglas del juego, navegador de progresiones y metas por ejercicio.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
@@ -4550,7 +4680,7 @@ function rfClearCorrection(b){
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 6 · CUERPO
+   ║  § 7 · CUERPO
    ║  Registro corporal: peso, % de grasa y medidas.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
@@ -4793,7 +4923,7 @@ function bodyLogAfterChange(){
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 7 · PERFIL Y COACH
+   ║  § 8 · PERFIL Y COACH
    ║  Perfil de atleta, perfil del coach, objetivos y notas, rangos por músculo.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
@@ -5386,7 +5516,12 @@ async function coachSave(){
 }
 
 /* ---- goals (with start / target / end dates) and injuries & notes ---- */
-function goalsActive(){return listLive('goals').filter(g=>!g.endDate);}
+/* FUENTE ÚNICA de objetivos vigentes: el programa activo (sus metas) o, si no hay, los de data/goals */
+function goalsActive(){
+  const pg=programActive();
+  if(pg)return pg.goals.map(g=>({phase:pg.phase,description:g.description,startDate:pg.startDate,targetDate:g.targetDate||pg.endDate||null,source:'program',programId:pg.id}));
+  return listLive('goals').filter(g=>!g.endDate);
+}
 function goalsNotesSectionHTML(){
   const ga=goalsActive(),notes=listLive('notes'),inj=notes.filter(n=>n.type==='injury'&&!n.resolvedDate);
   const chips=ga.map(g=>`<span class="bl-chip">🎯 ${g.phase?`<b>${COACH_LABELS[g.phase]}</b> · `:''}${esc(g.description)}</span>`).join('')
@@ -5490,6 +5625,7 @@ function renderGN(){
   root.innerHTML=`<div class="pw-card" style="max-width:520px">
     ${head(false)}
     <div class="pw-body" style="margin-top:16px">
+      ${isG&&programActive()?`<div class="bl-hint" style="margin:0 0 12px">Hay un programa activo («${esc(programActive().name)}»): <b>sus metas son tus objetivos vigentes</b>. Los de esta lista se usan cuando no hay programa activo.</div>`:''}
       <button class="rm-btn big" style="width:100%;margin-bottom:14px" onclick="gnNew()">＋ ${isG?'Nuevo objetivo':'Nueva lesión o nota'}</button>
       ${rows||`<div class="rm-empty"><div class="big">${isG?'🎯':'🩹'}</div>${isG?'Aún no hay objetivos.':'Aún no hay lesiones ni notas.'}</div>`}
     </div>
@@ -5768,7 +5904,7 @@ function drawMuscleRadar(){
 function drawRadar(){drawMuscleRadar();}
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 8 · SOCIAL
+   ║  § 9 · SOCIAL
    ║  Feed, crew, amigos, chats, notificaciones y compartir rutinas.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
@@ -6685,7 +6821,7 @@ function crewOpenMember(uid){
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 9 · INFORMES
+   ║  § 10 · INFORMES
    ║  journalExport (sesión y Super Journal), informe para el coach y respaldo.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
@@ -6867,14 +7003,14 @@ function exportCoachReport(){
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 10 · AJUSTES Y MANTENIMIENTO
-   ║  Pantalla Datos (uso normal): informe para el coach y respaldo. Lo temporal está en § 11.
+   ║  § 11 · AJUSTES Y MANTENIMIENTO
+   ║  Pantalla Datos (uso normal): informe para el coach y respaldo. Lo temporal está en § 12.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
 /* ══════════════════════════════════════
    DATOS — pantalla de datos (uso normal) y catálogo de lo que se guarda.
    DATA_PARTS / DATA_CATS describen cada tipo de dato (cuántos hay, cómo respaldarlo y cómo borrarlo);
-   los usan el respaldo (aquí) y las herramientas de borrado (§ 11).
+   los usan el respaldo (aquí) y las herramientas de borrado (§ 12).
 ══════════════════════════════════════ */
 const DATA_PARTS={
   journal:{label:'sesiones',count:()=>loadJournal().length,get:()=>loadJournal(),wipe:()=>wipeList('journal')},
@@ -6886,6 +7022,7 @@ const DATA_PARTS={
   musclePRs:{label:'PRs por músculo',count:()=>Object.values(loadMPRs()).reduce((a,v)=>a+(Array.isArray(v)?v.length:0),0),get:()=>loadMPRs(),
     wipe:async()=>{saveMPRs({});if(window.Cloud&&window.Cloud.saveMusclePRs)await window.Cloud.saveMusclePRs(cloudState.user.uid,{});}},
   profileHistory:{label:'versiones guardadas del perfil',count:()=>listLive('profileHistory').length,get:()=>listLoad('profileHistory'),wipe:()=>wipeList('profileHistory')},
+  programs:{label:'programas',count:()=>listLive('programs').length,get:()=>listLoad('programs'),wipe:()=>wipeList('programs')},
   routineHistory:{label:'cambios de rutina registrados',count:()=>listLive('routineHistory').length,get:()=>listLoad('routineHistory'),wipe:()=>wipeList('routineHistory')},
   routines:{label:'rutinas',count:()=>routines.length,get:()=>routines,wipe:()=>{routines=[];saveRoutines();}}
 };
@@ -6893,8 +7030,8 @@ const DATA_CATS={
   sessions:{ico:'📓',label:'Sesiones',desc:'Todo el War Journal: sesiones, series, pesos y RIR.',parts:['journal'],keep:'rutinas, cuerpo, objetivos y notas'},
   body:{ico:'⚖️',label:'Peso corporal y medidas',desc:'Peso, % de grasa y medidas de tu registro corporal.',parts:['bodyLog'],keep:'todo lo demás'},
   goalsNotes:{ico:'🎯',label:'Objetivos y notas',desc:'Objetivos con fechas, lesiones/notas y metas por ejercicio.',parts:['goals','notes','exerciseGoals'],keep:'todo lo demás'},
-  allButRoutines:{ico:'🧹',label:'Todo menos mis rutinas',desc:'Sesiones, cuerpo, objetivos, notas, metas, PRs por músculo e historiales.',
-    parts:['journal','bodyLog','goals','notes','exerciseGoals','musclePRs','profileHistory','routineHistory'],keep:'tus rutinas, tu perfil y tu perfil del coach'},
+  allButRoutines:{ico:'🧹',label:'Todo menos mis rutinas',desc:'Sesiones, cuerpo, objetivos, notas, metas, programas, PRs por músculo e historiales.',
+    parts:['journal','bodyLog','goals','notes','exerciseGoals','programs','musclePRs','profileHistory','routineHistory'],keep:'tus rutinas, tu perfil y tu perfil del coach'},
   routines:{ico:'📋',label:'Mis rutinas',desc:'Solo tus rutinas. Después se cargan las rutinas de ejemplo.',parts:['routines'],keep:'todo lo demás',danger:true}
 };
 let dataCat=null;
@@ -6924,7 +7061,7 @@ function dataBackup(cat){
 }
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 11 · HERRAMIENTAS (temporales)
+   ║  § 12 · HERRAMIENTAS (temporales)
    ║  Todo lo temporal, dentro de Datos ▸ Herramientas: borrar datos, datos de prueba y modo inspección. Pensado para quitarse fácil.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
@@ -6932,7 +7069,7 @@ function dataBackup(cat){
    BORRAR DATOS — clear data by category (this account only: device + cloud).
    Shows counts, offers a JSON backup and requires typing BORRAR.
    Routines are only removed by their own separate option.
-   The catalog it works on (DATA_PARTS / DATA_CATS) lives in § 10 and is shared with the backup.
+   The catalog it works on (DATA_PARTS / DATA_CATS) lives in § 11 and is shared with the backup.
 ══════════════════════════════════════ */
 function wipeList(name){listMarkWiped(name);localStorage.setItem(aKey(SYNC_LISTS[name].key),'[]');return syncList(name);}
 function viewDataTools(){
@@ -7162,6 +7299,7 @@ function viewInspect(){
   const goals=listLive('goals').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
   const notes=listLive('notes').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
   const rh=listLive('routineHistory').sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const pgs=programsAll();
   const ph=listLive('profileHistory').sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)));
   const exG=Object.entries(loadGoals());
   const cats=[
@@ -7182,6 +7320,7 @@ function viewInspect(){
     {ico:'📋',name:'Rutinas',n:routines.length,doc:'routines',local:rh[0]&&rh[0].updatedAt,
       rows:routines.slice(0,5).map(r=>{const h=rh.find(x=>x.routineId===r.id);return [h?h.date:'—',`${esc(r.name)} · ${(r.workouts||[]).length} workouts${h?' · '+h.action:''}`];})},
     {ico:'🕓',name:'Cambios de rutina',n:rh.length,doc:'routineHistory',local:rh[0]&&rh[0].updatedAt,rows:rh.slice(0,5).map(h=>[h.date,`${h.action} · ${esc(h.name||'')}${h.trimmed?' · (resumido)':''}`])},
+    {ico:'🗓',name:'Programas',n:pgs.length,doc:'programs',local:maxTs(pgs.map(x=>x.updatedAt)),rows:pgs.slice(0,5).map(x=>[x.startDate,(PG_STATUS_LABELS[x.status]||x.status)+' · '+esc(x.name)])},
     {ico:'👤',name:'Versiones del perfil',n:ph.length,doc:'profileHistory',local:ph[0]&&ph[0].createdAt,rows:ph.slice(0,5).map(h=>[tc(h.createdAt),h.source==='coach'?'Perfil del coach':'Perfil de atleta'])}
   ];
   const cards=cats.map(c=>`<div class="jr-card">
@@ -7201,7 +7340,7 @@ function viewInspect(){
 /* ══════════ end INSPECTION MODE ══════════ */
 
 /* ╔══════════════════════════════════════════════════════════════════════╗
-   ║  § 12 · ARRANQUE
+   ║  § 13 · ARRANQUE
    ║  Primer render, base científica y service worker.
    ╚══════════════════════════════════════════════════════════════════════╝ */
 
