@@ -7352,7 +7352,7 @@ function exportSuperJournal(){
    device only; nothing is sent anywhere. Weights stay in each exercise's own
    unit (kg | lb | kg_db | lb_db = per dumbbell) and every block says which.
 ══════════════════════════════════════ */
-const COACH_REPORT_SCHEMA=1;
+const COACH_REPORT_SCHEMA=2;   // 2 = v1 + bloque `program` (todos los campos de v1 siguen igual)
 const UNIT_INFO={kg:'kg',lb:'lb',kg_db:'kg por mancuerna',lb_db:'lb por mancuerna'};
 function e1rm(w,r){w=+w||0;r=+r||0;return w>0&&r>0?round1(w*(1+r/30)):0;}   // Epley, in the exercise's unit
 function rsSet(t){return {reps:+t.reps||0,weight:+t.weight||0,rir:t.rir==null?null:+t.rir};}
@@ -7368,6 +7368,76 @@ function planFor(routineName,workoutName,dateISO){
 function compactRoutine(r){
   return r?{name:r.name,workouts:(r.workouts||[]).map(w=>({name:w.name,exercises:(w.exercises||[]).map(e=>({
     name:e.name,unit:e.unit||'kg',restSeconds:e.restSeconds,muscles:e.muscles||[],sets:(e.sets||[]).map(rsSet)}))}))}:null;
+}
+/* ── bloque `program` del informe (schemaVersion 2): el programa y su plan vs lo realizado ── */
+function pgAddDays(ymd,n){const a=ymd.split('-').map(Number),d=new Date(Date.UTC(a[0],a[1]-1,a[2]+n));return d.getUTCFullYear()+'-'+pad2(d.getUTCMonth()+1)+'-'+pad2(d.getUTCDate());}
+/* bloques de 7 días contados desde startDate (semana 1 = días 1–7) hasta hi; el último se corta en endDate.
+   partial = el bloque no está completo (todavía en curso o recortado por endDate): no cuenta para el % */
+function pgBuckets(p,hi){
+  const out=[],n=programWeeks(p);
+  for(let i=0;i<n;i++){
+    const from=pgAddDays(p.startDate,7*i);if(from>hi)break;
+    const full=pgAddDays(from,6),to=full>p.endDate?p.endDate:full;
+    out.push({week:i+1,from,to,partial:to!==full||full>hi});
+  }
+  return out;
+}
+/* peso dentro del programa: inicial = último registro de los 7 días previos al inicio (o el primero después);
+   final = el último hasta hi. Ritmo semanal solo si hay ≥ 7 días entre ambos registros */
+function pgWeightChange(p,hi){
+  const W=loadBodyLog().filter(e=>e.weightKg!=null).slice().reverse(),lo=pgAddDays(p.startDate,-7);   // oldest → newest
+  let a=null,b=null;
+  W.forEach(e=>{if(e.date<=p.startDate&&e.date>=lo)a=e;});
+  if(!a)a=W.find(e=>e.date>p.startDate&&e.date<=hi)||null;
+  W.forEach(e=>{if(e.date<=hi)b=e;});
+  const o={startKg:a?a.weightKg:null,startDate:a?a.date:null,latestKg:b?b.weightKg:null,latestDate:b?b.date:null,changeKg:null,weeklyRatePct:null};
+  if(!a||!b||b.date<=a.date)return o;
+  const days=pgDayNum(b.date)-pgDayNum(a.date);
+  o.changeKg=round1(b.weightKg-a.weightKg);
+  if(days>=7)o.weeklyRatePct=Math.round(((b.weightKg-a.weightKg)/a.weightKg*100)/(days/7)*100)/100;
+  return o;
+}
+function programReportBlock(p,plannedPerWeek){
+  const today=todayStr(),over=p.status==='done'||p.status==='cancelled',ok=validYMD(p.startDate)&&validYMD(p.endDate);
+  const hi=ok?(p.endDate<today?p.endDate:today):today,upTo=over?p.endDate:null;
+  const prs=p.goals.map(g=>programGoalProgress(p,g,upTo));
+  const goals=p.goals.map((g,i)=>{const pr=prs[i];
+    return {description:g.description,metric:g.metric,exercise:g.metric==='exerciseWeight'?(g.exercise||null):null,
+      startValue:g.startValue==null?null:g.startValue,targetValue:g.targetValue==null?null:g.targetValue,targetDate:g.targetDate||null,
+      current:pr.current,unit:pr.unit||null,pct:pr.pct,reached:pr.reached};});
+  const paceName={done:'reached',ontrack:'onTrack',behind:'behind'};
+  const goalPace=p.goals.map((g,i)=>{const pr=prs[i];
+    return {description:g.description,expectedPct:g.metric==='other'||!ok?null:pgExpectedPct(p,g),actualPct:pr.pct,pace:paceName[pgPace(p,g,pr)]||null};});
+  // sessions per program week (planned = coach profile availability.daysPerWeek)
+  const S=ok?loadJournal().map(x=>ymdOf(x.dateISO)).filter(d=>d>=p.startDate&&d<=hi):[];
+  const weeks=ok?pgBuckets(p,hi).map(b=>({week:b.week,from:b.from,to:b.to,partial:b.partial,planned:plannedPerWeek,
+    done:S.filter(d=>d>=b.from&&d<=b.to).length,
+    deload:p.checkpoints.some(c=>c.type==='deload'&&c.date>=b.from&&c.date<=b.to)})):[];
+  const full=weeks.filter(w=>!w.partial),doneFull=full.reduce((a,w)=>a+w.done,0);
+  const pct=plannedPerWeek&&full.length?Math.round(100*doneFull/(plannedPerWeek*full.length)):null;
+  const wt=ok?pgWeightChange(p,hi):null;
+  const cp=programNextCheckpoint(p).next;
+  const nu=p.nutrition,adjs=p.adjustments.slice().reverse();
+  return {id:p.id,name:p.name,phase:p.phase,status:p.status,startDate:p.startDate,endDate:p.endDate,
+    weekNumber:ok?programWeekNow(p):null,totalWeeks:ok?programWeeks(p):null,notes:p.notes,
+    routines:p.routineIds.map(id=>{const r=findRoutine(id);return r?r.name:null;}).filter(Boolean),
+    goals,
+    nutrition:{current:{calories:nu.calories,proteinG:nu.proteinG,fatMinG:nu.fatMinG,notes:nu.notes},
+      history:nu.history.slice().reverse().map(h=>({date:h.date,calories:h.calories,proteinG:h.proteinG,fatMinG:h.fatMinG,reason:h.reason||''}))},
+    checkpoints:p.checkpoints.map(c=>({date:c.date,type:c.type,note:c.note||'',doneDate:c.doneDate||null})),
+    nextCheckpoint:cp?{date:cp.date,type:cp.type,note:cp.note||''}:null,
+    adjustmentsTotal:adjs.length,
+    latestAdjustments:adjs.slice(0,10).map(a=>({date:a.date,change:a.change,reason:a.reason||'',source:a.source})),
+    planVsActual:{asOf:today,
+      sessions:{plannedPerWeek,weeks,fullWeeks:full.length,done:doneFull,planned:plannedPerWeek?plannedPerWeek*full.length:null,pct,doneTotal:S.length},
+      weight:wt,goals:goalPace},
+    finalSummary:over?{outcome:p.status,endedOn:p.endDate,goalsReached:goals.filter(g=>g.reached).length,goalsTotal:goals.length,
+      goalsManual:goals.filter(g=>g.metric==='other').length,sessionsDone:S.length,adherencePct:pct,
+      weightChangeKg:wt?wt.changeKg:null,weeklyRatePct:wt?wt.weeklyRatePct:null}:null,
+    legend:{weeks:'Semana 1 = los primeros 7 días desde startDate. partial = semana incompleta (en curso o recortada por endDate): no cuenta para el porcentaje.',
+      plannedPerWeek:'Sesiones por semana declaradas en el perfil del coach (availability.daysPerWeek); null si no hay.',
+      weight:'startKg = último registro de los 7 días previos al inicio (o el primero después). weeklyRatePct = cambio % del peso por semana; null con menos de 7 días entre registros.',
+      pace:'onTrack si actualPct está a 10 puntos o menos de expectedPct (avance esperado por tiempo); reached si llegó al 100 %; null si no hay dato.'}};
 }
 function buildCoachReport(){
   const now=new Date(),dAgo=n=>{const d=new Date();d.setDate(d.getDate()-n);return d;};
@@ -7425,6 +7495,7 @@ function buildCoachReport(){
     return {routine:rn,workout:wn,exercise:en,unit:e?(e.unit||'kg'):null,startWeight:g.startWeight,targetWeight:g.targetWeight,startDate:ymdOf(g.startISO),deadline:ymdOf(g.deadlineISO)};});
   const notes=listLive('notes');
   const active=J.length?J[J.length-1].routineName:null;
+  const pgAct=programActive();
 
   return {app:'GymAI',type:'coachReport',schemaVersion:COACH_REPORT_SCHEMA,generatedAt:now.toISOString(),
     units:{weights:'en la unidad de cada ejercicio (campo unit)',legend:UNIT_INFO,bodyWeight:'kg',measurements:'cm',
@@ -7433,6 +7504,7 @@ function buildCoachReport(){
     athlete:coach,
     goals:{coachProfileGoal:coach.goal,active:goalsActive().map(g=>({phase:g.phase,description:g.description,startDate:g.startDate,targetDate:g.targetDate})),
       exerciseGoals:exGoals},
+    program:pgAct?programReportBlock(pgAct,planned):null,
     injuriesAndNotes:{activeInjuries:notes.filter(n=>n.type==='injury'&&!n.resolvedDate).map(n=>({date:n.date,text:n.text})),
       recent:notes.filter(n=>n.date>=D112).map(n=>({date:n.date,type:n.type,text:n.text,resolvedDate:n.resolvedDate}))},
     body:{latest:L,
@@ -7454,7 +7526,7 @@ function buildCoachReport(){
 function exportCoachReport(){
   if(!cloudState.user){showToast('Inicia sesión para generar el informe');return;}
   const r=buildCoachReport();
-  downloadFile('gymai-coach-report-'+todayStr()+'.json',JSON.stringify(r,null,1));
+  downloadFile('gymai-coach-report-'+todayStr()+'.json',JSON.stringify(r));   // compacto: sin sangrías, para que el archivo pese lo menos posible
   showToast('Informe para el coach descargado');
 }
 
