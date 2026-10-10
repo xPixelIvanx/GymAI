@@ -1,0 +1,384 @@
+{
+  "app": "GymAI",
+  "version": 1,
+  "type": "program",
+  "exportedAt": "2026-10-07T15:00:00.000Z",
+  "program": {
+    "name": "Definición octubre–diciembre",
+    "phase": "cutting",
+    "startDate": "2026-10-12",
+    "endDate": "2026-12-06",
+    "goals": [
+      {
+        "description": "Bajar de 82.0 a 78.5 kg",
+        "targetDate": "2026-12-06",
+        "metric": "weightKg",
+        "startValue": 82.0,
+        "targetValue": 78.5
+      },
+      {
+        "description": "Bajar a 14 % de grasa",
+        "targetDate": "2026-12-06",
+        "metric": "bodyFatPercent",
+        "startValue": 17.5,
+        "targetValue": 14
+      },
+      {
+        "description": "Cintura de 86 a 83 cm",
+        "targetDate": "2026-12-06",
+        "metric": "waistCm",
+        "startValue": 86,
+        "targetValue": 83
+      },
+      {
+        "description": "Press banca de 87.5 a 90 kg",
+        "metric": "exerciseWeight",
+        "exercise": "Press banca con barra",
+        "startValue": 87.5,
+        "targetValue": 90
+      },
+      {
+        "description": "Dormir al menos 7 h",
+        "metric": "other"
+      }
+    ],
+    "nutrition": {
+      "calories": 2300,
+      "proteinG": 170,
+      "fatMinG": 60,
+      "notes": "Déficit de ~300 kcal; proteína 2 g/kg"
+    },
+    "checkpoints": [
+      {
+        "date": "2026-11-02",
+        "type": "review",
+        "note": "Revisar ritmo de pérdida (0.3–0.5 kg/semana)"
+      },
+      {
+        "date": "2026-11-16",
+        "type": "deload",
+        "note": "Semana de descarga: pesos −10 % y +2 RIR"
+      },
+      {
+        "date": "2026-12-06",
+        "type": "review",
+        "note": "Cierre y decisión de la siguiente fase"
+      }
+    ],
+    "notes": "Prioridad: hombros y espalda. Si el peso se estanca 2 semanas, bajar 100 kcal.",
+    "routines": [
+      {
+        "name": "Upper/Lower definición",
+        "icon": "💪",
+        "complexity": 2,
+        "workouts": [
+          {
+            "name": "Upper A",
+            "exercises": [
+              {
+                "name": "Press banca con barra",
+                "unit": "kg",
+                "restSeconds": 150,
+                "muscles": [
+                  {
+                    "key": "chest",
+                    "role": "primary"
+                  },
+                  {
+                    "key": "triceps",
+                    "role": "secondary"
+                  },
+                  {
+                    "key": "shoulders",
+                    "role": "secondary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 6,
+                    "rir": 2,
+                    "weight": 87.5
+                  },
+                  {
+                    "reps": 6,
+                    "rir": 2,
+                    "weight": 87.5
+                  },
+                  {
+                    "reps": 8,
+                    "rir": 1,
+                    "weight": 80,
+                    "type": "backoff"
+                  }
+                ]
+              },
+              {
+                "name": "Remo con barra",
+                "unit": "kg",
+                "restSeconds": 120,
+                "muscles": [
+                  {
+                    "key": "upperback",
+                    "role": "primary"
+                  },
+                  {
+                    "key": "lats",
+                    "role": "secondary"
+                  },
+                  {
+                    "key": "biceps",
+                    "role": "secondary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 8,
+                    "rir": 2,
+                    "weight": 70
+                  },
+                  {
+                    "reps": 8,
+                    "rir": 2,
+                    "weight": 70
+                  },
+                  {
+                    "reps": 8,
+                    "rir": 1,
+                    "weight": 70
+                  }
+                ]
+              },
+              {
+                "name": "Press militar con mancuernas",
+                "unit": "kg_db",
+                "restSeconds": 120,
+                "muscles": [
+                  {
+                    "key": "shoulders",
+                    "role": "primary"
+                  },
+                  {
+                    "key": "triceps",
+                    "role": "secondary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 10,
+                    "rir": 2,
+                    "weight": 22
+                  },
+                  {
+                    "reps": 10,
+                    "rir": 2,
+                    "weight": 22
+                  },
+                  {
+                    "reps": 10,
+                    "rir": 1,
+                    "weight": 22
+                  }
+                ]
+              },
+              {
+                "name": "Elevaciones laterales",
+                "unit": "kg_db",
+                "restSeconds": 60,
+                "muscles": [
+                  {
+                    "key": "shoulders",
+                    "role": "primary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 15,
+                    "rir": 1,
+                    "weight": 9
+                  },
+                  {
+                    "reps": 15,
+                    "rir": 1,
+                    "weight": 9
+                  },
+                  {
+                    "reps": 15,
+                    "rir": 0,
+                    "weight": 9,
+                    "dropsets": [
+                      {
+                        "reps": 8,
+                        "weight": 6
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "Lower A",
+            "exercises": [
+              {
+                "name": "Sentadilla",
+                "unit": "kg",
+                "restSeconds": 180,
+                "muscles": [
+                  {
+                    "key": "quads",
+                    "role": "primary"
+                  },
+                  {
+                    "key": "glutes",
+                    "role": "secondary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 5,
+                    "rir": 3,
+                    "weight": 60,
+                    "type": "warmup"
+                  },
+                  {
+                    "reps": 6,
+                    "rir": 2,
+                    "weight": 100
+                  },
+                  {
+                    "reps": 6,
+                    "rir": 2,
+                    "weight": 100
+                  },
+                  {
+                    "reps": 6,
+                    "rir": 1,
+                    "weight": 100
+                  }
+                ]
+              },
+              {
+                "name": "Peso muerto rumano",
+                "unit": "kg",
+                "restSeconds": 150,
+                "muscles": [
+                  {
+                    "key": "hamstrings",
+                    "role": "primary"
+                  },
+                  {
+                    "key": "glutes",
+                    "role": "secondary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 8,
+                    "rir": 2,
+                    "weight": 90
+                  },
+                  {
+                    "reps": 8,
+                    "rir": 2,
+                    "weight": 90
+                  },
+                  {
+                    "reps": 8,
+                    "rir": 1,
+                    "weight": 90
+                  }
+                ]
+              },
+              {
+                "name": "Elevación de talones de pie",
+                "unit": "kg",
+                "restSeconds": 60,
+                "muscles": [
+                  {
+                    "key": "calves",
+                    "role": "primary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 15,
+                    "rir": 1,
+                    "weight": 80
+                  },
+                  {
+                    "reps": 15,
+                    "rir": 1,
+                    "weight": 80
+                  },
+                  {
+                    "reps": 15,
+                    "rir": 0,
+                    "weight": 80
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Brazos y hombros (simple)",
+        "icon": "🔥",
+        "complexity": 1,
+        "workouts": [
+          {
+            "name": "Brazos",
+            "exercises": [
+              {
+                "name": "Curl con barra Z",
+                "unit": "kg",
+                "restSeconds": 60,
+                "muscles": [
+                  {
+                    "key": "biceps",
+                    "role": "primary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 12,
+                    "weight": 30
+                  },
+                  {
+                    "reps": 12,
+                    "weight": 30
+                  },
+                  {
+                    "reps": 12,
+                    "weight": 30
+                  }
+                ]
+              },
+              {
+                "name": "Extensión de tríceps en polea",
+                "unit": "lb",
+                "restSeconds": 60,
+                "muscles": [
+                  {
+                    "key": "triceps",
+                    "role": "primary"
+                  }
+                ],
+                "sets": [
+                  {
+                    "reps": 12,
+                    "weight": 55
+                  },
+                  {
+                    "reps": 12,
+                    "weight": 55
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

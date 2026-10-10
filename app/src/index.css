@@ -1,0 +1,468 @@
+/* GymAI v2 — sistema de diseño.
+   Idea: un cuaderno de entrenador. Los datos del usuario van en grotesca (cifras tabulares); la voz del coach, en serif.
+   Lo memorable: el sello de certeza, un disco olímpico cuyo color dice qué tan firme es cada afirmación. */
+@import '@fontsource-variable/bricolage-grotesque';
+@import '@fontsource-variable/source-serif-4';
+
+:root {
+  --bg: #e9ecee;
+  --surface: #f6f7f8;
+  --ink: #11151a;
+  --ink-2: #444c56;
+  --ink-3: #5a626d;
+  --line: #cbd1d6;
+  --focus: #2457d6;
+
+  /* Discos olímpicos: color = certeza o estado */
+  --plate-blue: #2457d6; /* Evidencia */
+  --plate-green: #1f8a4e; /* Práctica */
+  --plate-yellow: #d9a400; /* Estimación */
+  --plate-white: #7b8590; /* Reportado */
+  --plate-red: #d6362f; /* Alerta */
+
+  --font-ui: 'Bricolage Grotesque Variable', system-ui, sans-serif;
+  --font-voice: 'Source Serif 4 Variable', Georgia, serif;
+
+  --step--1: 0.8125rem;
+  --step-0: 1rem;
+  --step-1: 1.1875rem;
+  --step-2: 1.4375rem;
+  --step-3: 1.75rem;
+  --step-4: 2.25rem;
+
+  --gutter: 16px;
+  --radius: 10px;
+  --tabbar-h: 64px;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0f1215;
+    --surface: #171b20;
+    --ink: #eef1f3;
+    --ink-2: #b6bec6;
+    --ink-3: #8d96a0;
+    --line: #2b323a;
+    --focus: #8fb0ff;
+    --plate-blue: #6c93ff;
+    --plate-green: #4cc884;
+    --plate-yellow: #f2c230;
+    --plate-white: #aeb6bf;
+    --plate-red: #ff6b63;
+  }
+}
+:root[data-theme='dark'] {
+  --bg: #0f1215;
+  --surface: #171b20;
+  --ink: #eef1f3;
+  --ink-2: #b6bec6;
+  --ink-3: #8d96a0;
+  --line: #2b323a;
+  --focus: #8fb0ff;
+  --plate-blue: #6c93ff;
+  --plate-green: #4cc884;
+  --plate-yellow: #f2c230;
+  --plate-white: #aeb6bf;
+  --plate-red: #ff6b63;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html {
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--step-0);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+}
+h1 {
+  font-size: var(--step-3);
+}
+h2 {
+  font-size: var(--step-2);
+}
+h3 {
+  font-size: var(--step-1);
+}
+p {
+  margin: 0;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ---------- Estructura ---------- */
+.shell {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+.page {
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 24px var(--gutter) calc(var(--tabbar-h) + 32px);
+  display: grid;
+  gap: 20px;
+  align-content: start;
+}
+.page__head {
+  display: grid;
+  gap: 4px;
+}
+.page__head p {
+  color: var(--ink-2);
+}
+.stack {
+  display: grid;
+  gap: 12px;
+}
+.cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.muted {
+  color: var(--ink-3);
+  font-size: var(--step--1);
+}
+
+.tabbar {
+  position: fixed;
+  inset: auto 0 0 0;
+  height: var(--tabbar-h);
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.tabbar a {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 2px;
+  color: var(--ink-3);
+  text-decoration: none;
+  font-size: var(--step--1);
+  font-weight: 500;
+}
+.tabbar a[aria-current='page'] {
+  color: var(--ink);
+  font-weight: 700;
+}
+.tabbar svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (min-width: 900px) {
+  .shell {
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 1fr;
+  }
+  .tabbar {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    inset: auto;
+    grid-auto-flow: row;
+    grid-auto-rows: 56px;
+    align-content: start;
+    border-top: 0;
+    border-right: 1px solid var(--line);
+    padding: 16px 0;
+  }
+  .tabbar a {
+    grid-auto-flow: column;
+    justify-content: start;
+    padding: 0 20px;
+    gap: 12px;
+    font-size: var(--step-0);
+  }
+  .page {
+    padding-bottom: 48px;
+  }
+}
+
+/* ---------- Botones y campos ---------- */
+.btn {
+  appearance: none;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: var(--radius);
+  padding: 11px 16px;
+  min-height: 44px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.btn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn--quiet {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+}
+.btn--danger {
+  background: transparent;
+  color: var(--plate-red);
+  border-color: var(--plate-red);
+}
+.btn--small {
+  min-height: 36px;
+  padding: 6px 12px;
+  font-size: var(--step--1);
+}
+.field {
+  display: grid;
+  gap: 6px;
+}
+.field > span {
+  font-weight: 600;
+  font-size: var(--step--1);
+}
+.input,
+.textarea,
+.select {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  min-height: 44px;
+}
+.textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+.hint {
+  color: var(--ink-3);
+  font-size: var(--step--1);
+}
+
+/* ---------- Listas (sin tarjetas: renglones con línea fina) ---------- */
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.list > li {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+.list__main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.list__title {
+  font-weight: 600;
+}
+
+/* ---------- Avisos ---------- */
+.banner {
+  border-left: 4px solid var(--plate-yellow);
+  background: var(--surface);
+  padding: 12px 14px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  display: grid;
+  gap: 4px;
+}
+.banner--alert {
+  border-left-color: var(--plate-red);
+}
+.banner--ok {
+  border-left-color: var(--plate-green);
+}
+.banner ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+/* ---------- Sello de certeza (disco olímpico) ---------- */
+.seal {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--step--1);
+  font-weight: 600;
+  font-family: var(--font-ui);
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.seal__disc {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: radial-gradient(circle at center, var(--bg) 0 2.2px, var(--plate) 2.4px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--plate) 55%, var(--ink));
+}
+.seal--evidencia {
+  --plate: var(--plate-blue);
+}
+.seal--practica {
+  --plate: var(--plate-green);
+}
+.seal--estimacion {
+  --plate: var(--plate-yellow);
+}
+.seal--reportado {
+  --plate: var(--plate-white);
+}
+
+/* ---------- Voz del coach ---------- */
+.coach-voice {
+  font-family: var(--font-voice);
+  font-size: var(--step-1);
+  line-height: 1.6;
+  max-width: 62ch;
+  display: grid;
+  gap: 0.8em;
+}
+.coach-voice ul,
+.coach-voice ol {
+  margin: 0;
+  padding-left: 1.2em;
+}
+.coach-voice li + li {
+  margin-top: 0.3em;
+}
+.coach-voice table {
+  border-collapse: collapse;
+  font-family: var(--font-ui);
+  font-size: var(--step--1);
+  width: 100%;
+}
+.coach-voice th,
+.coach-voice td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px 6px 0;
+  text-align: left;
+}
+.coach-voice pre {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font-size: var(--step--1);
+}
+.msg {
+  display: grid;
+  gap: 8px;
+}
+.msg--user {
+  justify-items: end;
+}
+.msg--user .msg__bubble {
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: var(--radius) var(--radius) 2px var(--radius);
+  padding: 10px 14px;
+  max-width: 85%;
+  white-space: pre-wrap;
+}
+.msg__tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink-3);
+  font-size: var(--step--1);
+}
+
+/* ---------- Volumen semanal: barras de series por músculo ---------- */
+.vol {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr 3.2rem;
+  gap: 4px 10px;
+  align-items: center;
+}
+.vol__track {
+  position: relative;
+  height: 10px;
+  background: var(--line);
+  border-radius: 5px;
+}
+.vol__range {
+  position: absolute;
+  left: 41.67%; /* 10 de 24 series */
+  width: 41.67%; /* hasta 20 de 24 */
+  top: -3px;
+  bottom: -3px;
+  border-left: 1px dashed var(--ink-3);
+  border-right: 1px dashed var(--ink-3);
+}
+.vol__fill {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--plate-green);
+}
+.vol__fill[data-level='low'] {
+  background: var(--plate-yellow);
+}
+.vol__fill[data-level='alert'] {
+  background: var(--plate-red);
+}
+.vol__fill[data-level='high'] {
+  background: var(--ink-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
